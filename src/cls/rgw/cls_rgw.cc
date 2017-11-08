@@ -1470,6 +1470,7 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
     return ret;
   }
 
+  //这里是处理什么并发情况?
   if (!olh.start_modify(op.olh_epoch)) {
     ret = obj.write(op.olh_epoch, false);
     if (ret < 0) {
@@ -1532,7 +1533,11 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
     return ret;
   }
 
+  //通过current标记,解决可见性问题
   /* write the instance and list entries */
+  //like this:
+  //xie.pngv912iIe3QYVLBL78GY.Jo4B0.YE1IWEfBTp6
+  //1000_xie.pngiIe3QYVLBL78GY.Jo4B0.YE1IWEfBTp6
   ret = obj.write(olh.get_epoch(), true);
   if (ret < 0) {
     return ret;
@@ -1558,7 +1563,7 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
       powner = &entry.meta.owner;
       powner_display_name = &entry.meta.owner_display_name;
     }
-
+    //XRCM : these log only use for multisite, make bilog as logic log, not physical log
     RGWModifyOp operation = (op.delete_marker ? CLS_RGW_OP_LINK_OLH_DM : CLS_RGW_OP_LINK_OLH);
     ret = log_index_operation(hctx, op.key, operation, op.op_tag,
                               entry.meta.mtime, ver,
@@ -1646,6 +1651,7 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
     /* this is the current head, need to update! */
     cls_rgw_obj_key next_key;
     bool found;
+    //通过这个查找一个新的current,简单粗暴，使用搜索方式解决
     ret = obj.find_next_key(&next_key, &found);
     if (ret < 0) {
       CLS_LOG(0, "ERROR: obj.find_next_key() returned ret=%d", ret);
@@ -1989,6 +1995,7 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlis
         if (ret < 0)
 	  return ret;
         if (log_op) {
+	  //XRCM：why is not prossible CLS_RGW_OP_LINK_OLH?
           ret = log_index_operation(hctx, cur_change.key, CLS_RGW_OP_ADD, cur_change.tag, cur_change.meta.mtime,
                                     cur_change.ver, CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker, 0, NULL, NULL);
           if (ret < 0) {

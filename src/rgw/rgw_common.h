@@ -467,7 +467,7 @@ struct RGWAccessKey {
   void decode_json(JSONObj *obj);
   void decode_json(JSONObj *obj, bool swift);
 };
-WRITE_CLASS_ENCODER(RGWAccessKey)
+//WRITE_CLASS_ENCODER(RGWAccessKey)
 
 struct RGWSubUser {
   string name;
@@ -493,7 +493,7 @@ struct RGWSubUser {
 
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWSubUser)
+//WRITE_CLASS_ENCODER(RGWSubUser)
 
 class RGWUserCaps
 {
@@ -524,7 +524,7 @@ public:
 
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWUserCaps)
+//WRITE_CLASS_ENCODER(RGWUserCaps)
 
 void encode_json(const char *name, const obj_version& v, Formatter *f);
 void encode_json(const char *name, const RGWUserCaps& val, Formatter *f);
@@ -677,7 +677,7 @@ struct RGWUserInfo
 
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWUserInfo)
+//WRITE_CLASS_ENCODER(RGWUserInfo)
 
 struct rgw_bucket {
   std::string tenant;
@@ -783,7 +783,7 @@ struct rgw_bucket {
     return name.compare(b.name) < 0;
   }
 };
-WRITE_CLASS_ENCODER(rgw_bucket)
+//WRITE_CLASS_ENCODER(rgw_bucket)
 
 inline ostream& operator<<(ostream& out, const rgw_bucket &b) {
   out << b.name;
@@ -1022,7 +1022,7 @@ struct RGWBucketInfo
   RGWBucketInfo() : flags(0), has_instance_obj(false), num_shards(0), bucket_index_shard_hash_type(MOD), requester_pays(false),
                     has_website(false), swift_versioning(false) {}
 };
-WRITE_CLASS_ENCODER(RGWBucketInfo)
+//WRITE_CLASS_ENCODER(RGWBucketInfo)
 
 struct RGWBucketEntryPoint
 {
@@ -1077,7 +1077,7 @@ struct RGWBucketEntryPoint
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWBucketEntryPoint)
+//WRITE_CLASS_ENCODER(RGWBucketEntryPoint)
 
 struct RGWStorageStats
 {
@@ -1185,7 +1185,7 @@ struct rgw_obj_key {
   }
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_obj_key)
+//WRITE_CLASS_ENCODER(rgw_obj_key)
 
 inline ostream& operator<<(ostream& out, const rgw_obj_key &o) {
   if (o.instance.empty()) {
@@ -1415,7 +1415,7 @@ struct RGWBucketEnt {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<RGWBucketEnt*>& o);
 };
-WRITE_CLASS_ENCODER(RGWBucketEnt)
+//WRITE_CLASS_ENCODER(RGWBucketEnt)
 
 class rgw_obj {
   std::string orig_obj;
@@ -1756,7 +1756,7 @@ public:
     return (r < 0);
   }
 };
-WRITE_CLASS_ENCODER(rgw_obj)
+//WRITE_CLASS_ENCODER(rgw_obj)
 
 struct rgw_cache_entry_info {
   string cache_locator;

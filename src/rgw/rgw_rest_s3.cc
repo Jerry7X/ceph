@@ -4019,6 +4019,7 @@ int RGW_Auth_S3::authorize_v2(RGWRados *store, struct req_state *s)
   time_t now;
   time(&now);
 
+  //"AWS oBZD9OpVOhq2bHEhakV5:3oiWoKSHT+moO/8vHa9chAdFjIA="
   if (!s->http_auth || !(*s->http_auth)) {
     auth_id = s->info.args.get("AWSAccessKeyId");
     auth_sign = s->info.args.get("Signature");

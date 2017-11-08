@@ -50,6 +50,7 @@ class RGWRESTConn;
 
 static inline void prepend_bucket_marker(rgw_bucket& bucket, const string& orig_oid, string& oid)
 {
+  //bucket所有对象的前缀
   if (bucket.marker.empty() || orig_oid.empty()) {
     oid = orig_oid;
   } else {
@@ -95,7 +96,7 @@ struct RGWOLHInfo {
   static void generate_test_instances(list<RGWOLHInfo*>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(RGWOLHInfo)
+//WRITE_CLASS_ENCODER(RGWOLHInfo)
 
 struct RGWOLHPendingInfo {
   ceph::real_time time;
@@ -116,7 +117,7 @@ struct RGWOLHPendingInfo {
 
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(RGWOLHPendingInfo)
+//WRITE_CLASS_ENCODER(RGWOLHPendingInfo)
 
 struct RGWUsageBatch {
   map<ceph::real_time, rgw_usage_log_entry> m;
@@ -186,7 +187,7 @@ struct RGWObjManifestPart {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<RGWObjManifestPart*>& o);
 };
-WRITE_CLASS_ENCODER(RGWObjManifestPart)
+//WRITE_CLASS_ENCODER(RGWObjManifestPart)
 
 /*
  The manifest defines a set of rules for structuring the object parts.
@@ -237,7 +238,7 @@ struct RGWObjManifestRule {
   }
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(RGWObjManifestRule)
+//WRITE_CLASS_ENCODER(RGWObjManifestRule)
 
 class RGWObjManifest {
 protected:
@@ -617,7 +618,7 @@ public:
     }
   };
 };
-WRITE_CLASS_ENCODER(RGWObjManifest)
+//WRITE_CLASS_ENCODER(RGWObjManifest)
 
 struct RGWUploadPartInfo {
   uint32_t num;
@@ -650,8 +651,9 @@ struct RGWUploadPartInfo {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<RGWUploadPartInfo*>& o);
 };
-WRITE_CLASS_ENCODER(RGWUploadPartInfo)
+//WRITE_CLASS_ENCODER(RGWUploadPartInfo)
 
+//XRCM : this struct only in memory
 struct RGWObjState {
   rgw_obj obj;
   bool is_atomic;
@@ -752,7 +754,7 @@ struct RGWDefaultSystemMetaObjInfo {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWDefaultSystemMetaObjInfo)
+//WRITE_CLASS_ENCODER(RGWDefaultSystemMetaObjInfo)
 
 struct RGWNameToId {
   string obj_id;
@@ -772,7 +774,7 @@ struct RGWNameToId {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWNameToId)
+//WRITE_CLASS_ENCODER(RGWNameToId)
 
 class RGWSystemMetaObj {
 protected:
@@ -845,7 +847,7 @@ public:
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWSystemMetaObj)
+//WRITE_CLASS_ENCODER(RGWSystemMetaObj)
 
 struct RGWZoneGroup;
 
@@ -889,7 +891,7 @@ struct RGWZonePlacementInfo {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWZonePlacementInfo)
+//WRITE_CLASS_ENCODER(RGWZonePlacementInfo)
 
 struct RGWZoneParams : RGWSystemMetaObj {
   rgw_bucket domain_root;
@@ -985,7 +987,7 @@ struct RGWZoneParams : RGWSystemMetaObj {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<RGWZoneParams*>& o);
 };
-WRITE_CLASS_ENCODER(RGWZoneParams)
+//WRITE_CLASS_ENCODER(RGWZoneParams)
 
 struct RGWZone {
   string id;
@@ -1044,7 +1046,7 @@ struct RGWZone {
 
   bool is_read_only() { return read_only; }
 };
-WRITE_CLASS_ENCODER(RGWZone)
+//WRITE_CLASS_ENCODER(RGWZone)
 
 struct RGWDefaultZoneGroupInfo {
   string default_zonegroup;
@@ -1064,7 +1066,7 @@ struct RGWDefaultZoneGroupInfo {
   void decode_json(JSONObj *obj);
   //todo: implement ceph-dencoder
 };
-WRITE_CLASS_ENCODER(RGWDefaultZoneGroupInfo)
+//WRITE_CLASS_ENCODER(RGWDefaultZoneGroupInfo)
 
 struct RGWZoneGroupPlacementTarget {
   string name;
@@ -1098,7 +1100,7 @@ struct RGWZoneGroupPlacementTarget {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWZoneGroupPlacementTarget)
+//WRITE_CLASS_ENCODER(RGWZoneGroupPlacementTarget)
 
 
 struct RGWZoneGroup : public RGWSystemMetaObj {
@@ -1207,7 +1209,7 @@ struct RGWZoneGroup : public RGWSystemMetaObj {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<RGWZoneGroup*>& o);
 };
-WRITE_CLASS_ENCODER(RGWZoneGroup)
+//WRITE_CLASS_ENCODER(RGWZoneGroup)
 
 struct RGWPeriodMap
 {
@@ -1234,7 +1236,7 @@ struct RGWPeriodMap
 
   uint32_t get_zone_short_id(const string& zone_id) const;
 };
-WRITE_CLASS_ENCODER(RGWPeriodMap)
+//WRITE_CLASS_ENCODER(RGWPeriodMap)
 
 struct RGWPeriodConfig
 {
@@ -1258,7 +1260,7 @@ struct RGWPeriodConfig
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWPeriodConfig)
+//WRITE_CLASS_ENCODER(RGWPeriodConfig)
 
 /* for backward comaptability */
 struct RGWRegionMap {
@@ -1276,7 +1278,7 @@ struct RGWRegionMap {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWRegionMap)
+//WRITE_CLASS_ENCODER(RGWRegionMap)
 
 struct RGWZoneGroupMap {
 
@@ -1297,7 +1299,7 @@ struct RGWZoneGroupMap {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWZoneGroupMap)
+//WRITE_CLASS_ENCODER(RGWZoneGroupMap)
 
 class RGWRealm;
 
@@ -1333,7 +1335,7 @@ struct objexp_hint_entry {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(objexp_hint_entry)
+//WRITE_CLASS_ENCODER(objexp_hint_entry)
 
 class RGWPeriod;
 
@@ -1395,7 +1397,7 @@ public:
   /// notify the zone of a new period
   int notify_new_period(const RGWPeriod& period);
 };
-WRITE_CLASS_ENCODER(RGWRealm)
+//WRITE_CLASS_ENCODER(RGWRealm)
 
 struct RGWPeriodLatestEpochInfo {
   epoch_t epoch;
@@ -1415,7 +1417,7 @@ struct RGWPeriodLatestEpochInfo {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(RGWPeriodLatestEpochInfo)
+//WRITE_CLASS_ENCODER(RGWPeriodLatestEpochInfo)
 
 class RGWPeriod
 {
@@ -1556,7 +1558,7 @@ public:
     return realm_id + ":staging";
   }
 };
-WRITE_CLASS_ENCODER(RGWPeriod)
+//WRITE_CLASS_ENCODER(RGWPeriod)
 
 class RGWDataChangesLog;
 class RGWReplicaLogger;

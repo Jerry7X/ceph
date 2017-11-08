@@ -410,6 +410,8 @@ enum {
   OPT_PERIOD_LIST,
   OPT_PERIOD_UPDATE,
   OPT_PERIOD_COMMIT,
+  OPT_QUERY_OBJMAP,
+  OPT_QUERY_BIMAP,
   OPT_SYNC_STATUS,
 };
 
@@ -439,6 +441,7 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       strcmp(cmd, "placement") == 0 ||
       strcmp(cmd, "pool") == 0 ||
       strcmp(cmd, "pools") == 0 ||
+      strcmp(cmd, "query") == 0 ||
       strcmp(cmd, "quota") == 0 ||
       strcmp(cmd, "realm") == 0 ||
       strcmp(cmd, "replicalog") == 0 ||
@@ -782,6 +785,11 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       return OPT_REPLICALOG_UPDATE;
     if (strcmp(cmd, "delete") == 0)
       return OPT_REPLICALOG_DELETE;
+  } else if (strcmp(prev_cmd, "query") == 0) {
+    if (strcmp(cmd, "objmap") == 0)
+      return OPT_QUERY_OBJMAP;
+    if (strcmp(cmd, "bimap") == 0)
+      return OPT_QUERY_BIMAP;
   } else if (strcmp(prev_cmd, "sync") == 0) {
     if (strcmp(cmd, "status") == 0)
       return OPT_SYNC_STATUS;
@@ -5607,6 +5615,63 @@ next:
     }
   }
 
+  if (opt_cmd == OPT_QUERY_OBJMAP) {
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    if (!specified_shard_id) {
+      cerr << "ERROR: shard_id not specified" << std::endl;
+      return EINVAL;
+    }
+
+    RGWBucketInfo bucket_info;
+    int ret = init_bucket(tenant, bucket_name, bucket_id, bucket_info, bucket);
+    if (ret < 0) {
+      cerr << "ERROR: could not init bucket: " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+
+    rgw_obj obj(bucket, object);
+    obj.set_instance(object_version);
+    RGWRados::BucketShard bs(store);
+    ret = bs.init(bucket, obj);
+    if (ret < 0) {
+      cerr << "ERROR: init bucket shard: " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+
+    formatter->open_object_section("result");
+    encode_json("shard_id", bs.shard_id, formatter);
+    formatter->close_section();
+
+    formatter->flush(cout);
+  }
+
+  if (opt_cmd == OPT_QUERY_BIMAP) {
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    if (shard_id.empty()) {
+      cerr << "ERROR: object not specified" << std::endl;
+      return EINVAL;
+    }	
+    RGWBucketInfo bucket_info;
+    int ret = init_bucket(tenant, bucket_name, bucket_id, bucket_info, bucket);
+    if (ret < 0) {
+      cerr << "ERROR: could not init bucket: " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+    rgw_bucket_shard bs(bucket, shard_id);
+    RGWDataChangesLog *log = store->data_log;
+    int index = log->choose_oid(bs);
+    formatter->open_object_section("result");
+    encode_json("shard_id", index, formatter);
+    formatter->close_section();
+    formatter->flush(cout);
+  }
+  
   if (opt_cmd == OPT_SYNC_STATUS) {
     sync_status(formatter);
   }
@@ -5712,6 +5777,9 @@ next:
     uint64_t full_complete = 0;
 
     for (auto marker_iter : sync_status.sync_markers) {
+      if (specified_shard_id && shard_id != marker_iter.first) 
+        continue;
+
       full_total += marker_iter.second.total_entries;
       if (marker_iter.second.state == rgw_meta_sync_marker::SyncState::FullSync) {
         full_complete += marker_iter.second.pos;

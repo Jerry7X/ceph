@@ -218,7 +218,8 @@ void Elector::handle_propose(MonOpRequestRef op)
 {
   op->mark_event("elector:handle_propose");
   MMonElection *m = static_cast<MMonElection*>(op->get_req());
-  dout(5) << "handle_propose from " << m->get_source() << dendl;
+  //check slow op
+  dout(5) << "handle_propose from " << m->get_source() << " arrive at " << m->get_recv_stamp() << dendl;
   int from = m->get_source().num();
 
   assert(m->epoch % 2 == 1); // election

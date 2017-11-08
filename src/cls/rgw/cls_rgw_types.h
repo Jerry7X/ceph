@@ -84,10 +84,11 @@ struct rgw_bucket_pending_info {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<rgw_bucket_pending_info*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_pending_info)
+//WRITE_CLASS_ENCODER(rgw_bucket_pending_info)
 
+//XRCM:the meta for dir entry, in fact for object
 struct rgw_bucket_dir_entry_meta {
-  uint8_t category;
+  uint8_t category; //RGWObjCategory
   uint64_t size;
   ceph::real_time mtime;
   string etag;
@@ -131,7 +132,7 @@ struct rgw_bucket_dir_entry_meta {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<rgw_bucket_dir_entry_meta*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_dir_entry_meta)
+//WRITE_CLASS_ENCODER(rgw_bucket_dir_entry_meta)
 
 template<class T>
 void encode_packed_val(T val, bufferlist& bl)
@@ -229,7 +230,7 @@ struct rgw_bucket_entry_ver {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<rgw_bucket_entry_ver*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_entry_ver)
+//WRITE_CLASS_ENCODER(rgw_bucket_entry_ver)
 
 struct cls_rgw_obj_key {
   string name;
@@ -274,7 +275,7 @@ struct cls_rgw_obj_key {
     ls.back()->instance = "instance";
   }
 };
-WRITE_CLASS_ENCODER(cls_rgw_obj_key)
+//WRITE_CLASS_ENCODER(cls_rgw_obj_key)
 
 
 #define RGW_BUCKET_DIRENT_FLAG_VER           0x1    /* a versioned object instance */
@@ -282,6 +283,7 @@ WRITE_CLASS_ENCODER(cls_rgw_obj_key)
 #define RGW_BUCKET_DIRENT_FLAG_DELETE_MARKER 0x4    /* delete marker */
 #define RGW_BUCKET_DIRENT_FLAG_VER_MARKER    0x8    /* object is versioned, a placeholder for the plain entry */
 
+//XRCM: not not name rgw_bi_entry? because already used as rgw_cls_bi_entry
 struct rgw_bucket_dir_entry {
   cls_rgw_obj_key key;
   rgw_bucket_entry_ver ver;
@@ -359,8 +361,9 @@ struct rgw_bucket_dir_entry {
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<rgw_bucket_dir_entry*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_dir_entry)
+//WRITE_CLASS_ENCODER(rgw_bucket_dir_entry)
 
+//yes, so bi entry is a super entry
 enum BIIndexType {
   InvalidIdx    = 0,
   PlainIdx      = 1,
@@ -370,6 +373,7 @@ enum BIIndexType {
 
 struct rgw_bucket_category_stats;
 
+//bi entry include bucket dir entry/ instance entry(multiversion) / olh entry
 struct rgw_cls_bi_entry {
   BIIndexType type;
   string idx;
@@ -400,7 +404,7 @@ struct rgw_cls_bi_entry {
 
   bool get_info(cls_rgw_obj_key *key, uint8_t *category, rgw_bucket_category_stats *accounted_stats);
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_entry)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_entry)
 
 enum OLHLogOp {
   CLS_RGW_OLH_OP_UNKNOWN         = 0,
@@ -443,7 +447,7 @@ struct rgw_bucket_olh_log_entry {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_olh_log_entry)
+//WRITE_CLASS_ENCODER(rgw_bucket_olh_log_entry)
 
 struct rgw_bucket_olh_entry {
   cls_rgw_obj_key key;
@@ -481,7 +485,7 @@ struct rgw_bucket_olh_entry {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_olh_entry)
+//WRITE_CLASS_ENCODER(rgw_bucket_olh_entry)
 
 struct rgw_bi_log_entry {
   string id;
@@ -548,7 +552,7 @@ struct rgw_bi_log_entry {
     return ((bilog_flags & RGW_BILOG_FLAG_VERSIONED_OP) != 0);
   }
 };
-WRITE_CLASS_ENCODER(rgw_bi_log_entry)
+//WRITE_CLASS_ENCODER(rgw_bi_log_entry)
 
 struct rgw_bucket_category_stats {
   uint64_t total_size;
@@ -574,7 +578,7 @@ struct rgw_bucket_category_stats {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_bucket_category_stats*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_category_stats)
+//WRITE_CLASS_ENCODER(rgw_bucket_category_stats)
 
 struct rgw_bucket_dir_header {
   map<uint8_t, rgw_bucket_category_stats> stats;
@@ -616,7 +620,7 @@ struct rgw_bucket_dir_header {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_bucket_dir_header*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_dir_header)
+//WRITE_CLASS_ENCODER(rgw_bucket_dir_header)
 
 struct rgw_bucket_dir {
   struct rgw_bucket_dir_header header;
@@ -637,7 +641,7 @@ struct rgw_bucket_dir {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_bucket_dir*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_bucket_dir)
+//WRITE_CLASS_ENCODER(rgw_bucket_dir)
 
 struct rgw_usage_data {
   uint64_t bytes_sent;
@@ -673,7 +677,7 @@ struct rgw_usage_data {
     successful_ops += usage.successful_ops;
   }
 };
-WRITE_CLASS_ENCODER(rgw_usage_data)
+//WRITE_CLASS_ENCODER(rgw_usage_data)
 
 
 struct rgw_usage_log_entry {
@@ -757,7 +761,7 @@ struct rgw_usage_log_entry {
     total_usage.aggregate(data);
   }
 };
-WRITE_CLASS_ENCODER(rgw_usage_log_entry)
+//WRITE_CLASS_ENCODER(rgw_usage_log_entry)
 
 struct rgw_usage_log_info {
   vector<rgw_usage_log_entry> entries;
@@ -776,7 +780,7 @@ struct rgw_usage_log_info {
 
   rgw_usage_log_info() {}
 };
-WRITE_CLASS_ENCODER(rgw_usage_log_info)
+//WRITE_CLASS_ENCODER(rgw_usage_log_info)
 
 struct rgw_user_bucket {
   string user;
@@ -809,7 +813,7 @@ struct rgw_user_bucket {
     return false;
   }
 };
-WRITE_CLASS_ENCODER(rgw_user_bucket)
+//WRITE_CLASS_ENCODER(rgw_user_bucket)
 
 enum cls_rgw_gc_op {
   CLS_RGW_GC_DEL_OBJ,
@@ -858,7 +862,7 @@ struct cls_rgw_obj {
     ls.back()->loc = "mykey";
   }
 };
-WRITE_CLASS_ENCODER(cls_rgw_obj)
+//WRITE_CLASS_ENCODER(cls_rgw_obj)
 
 struct cls_rgw_obj_chain {
   list<cls_rgw_obj> objs;
@@ -902,7 +906,7 @@ struct cls_rgw_obj_chain {
     return objs.empty();
   }
 };
-WRITE_CLASS_ENCODER(cls_rgw_obj_chain)
+//WRITE_CLASS_ENCODER(cls_rgw_obj_chain)
 
 struct cls_rgw_gc_obj_info
 {
@@ -943,6 +947,6 @@ struct cls_rgw_gc_obj_info
     ls.back()->time = ceph::real_clock::from_ceph_timespec(ts);
   }
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_obj_info)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_obj_info)
 
 #endif

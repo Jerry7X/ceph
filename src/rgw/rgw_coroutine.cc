@@ -321,6 +321,8 @@ bool RGWCoroutinesStack::collect(RGWCoroutine *op, int *ret, RGWCoroutinesStack 
   }
 
   s->entries.swap(new_list);
+  //这返回值看不懂啊，完不完成done都反应不了?
+  //这应该看spawn是否为null吧
   return (!done);
 }
 

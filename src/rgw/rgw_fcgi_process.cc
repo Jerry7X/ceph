@@ -98,6 +98,7 @@ void RGWFCGXProcess::run()
       req_throttle.put(1);
       break;
     }
+    //丢到队列中，后面一个线程池来处理
     req_wq.queue(req);
   }
 
@@ -117,7 +118,9 @@ void RGWFCGXProcess::handle_request(RGWRequest* r)
   FCGX_Request* fcgx = req->fcgx;
   RGWFCGX client_io(fcgx);
 
- 
+  //client_io 使用的是链路信息
+  //req 使用的是请求数据
+  // store和rest是本地的资源和配置
   int ret = process_request(store, rest, req, &client_io, olog);
   if (ret < 0) {
     /* we don't really care about return code */

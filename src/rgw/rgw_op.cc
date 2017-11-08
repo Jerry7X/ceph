@@ -2528,7 +2528,8 @@ void RGWPutObj::execute()
 
   if (supplied_md5_b64) {
     need_calc_md5 = true;
-
+    //how client ofer HTTP_CONTENT_MD5
+    //QX : XIERUI armor like encode/decode, why do this?
     ldout(s->cct, 15) << "supplied_md5_b64=" << supplied_md5_b64 << dendl;
     op_ret = ceph_unarmor(supplied_md5_bin, &supplied_md5_bin[CEPH_CRYPTO_MD5_DIGESTSIZE + 1],
                        supplied_md5_b64, supplied_md5_b64 + strlen(supplied_md5_b64));
@@ -2537,7 +2538,7 @@ void RGWPutObj::execute()
       op_ret = -ERR_INVALID_DIGEST;
       goto done;
     }
-
+    //QX:why not this transfer?
     buf_to_hex((const unsigned char *)supplied_md5_bin, CEPH_CRYPTO_MD5_DIGESTSIZE, supplied_md5);
     ldout(s->cct, 15) << "supplied_md5=" << supplied_md5 << dendl;
   }
@@ -2552,6 +2553,7 @@ void RGWPutObj::execute()
     }
   }
 
+  //QX : swift etag is different with s3
   if (supplied_etag) {
     strncpy(supplied_md5, supplied_etag, sizeof(supplied_md5) - 1);
     supplied_md5[sizeof(supplied_md5) - 1] = '\0';

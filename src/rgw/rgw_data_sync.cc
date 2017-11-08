@@ -2520,13 +2520,15 @@ int RGWBucketShardIncrementalSyncCR::operate()
         ldout(sync_env->cct, 20) << "[inc sync] syncing object: "
             << bucket_shard_str{bs} << "/" << key << dendl;
         updated_status = false;
-        while (!marker_tracker->can_do_op(key)) {
+	//遇到冲突的情况
+	//这里出现死循环了
+        while (!marker_tracker->can_do_op(key) && (sync_status == 0)) {
           if (!updated_status) {
             set_status() << "can't do op, conflicting inflight operation";
             updated_status = true;
           }
           ldout(sync_env->cct, 5) << *this << ": [inc sync] can't do op on key=" << key << " need to wait for conflicting operation to complete" << dendl;
-          yield wait_for_child();
+	  yield wait_for_child();
           bool again = true;
           while (again) {
             again = collect(&ret, lease_stack);
@@ -2537,6 +2539,10 @@ int RGWBucketShardIncrementalSyncCR::operate()
             }
           }
         }
+
+	if (sync_status != 0)
+	  break;
+	
         if (!marker_tracker->index_key_to_marker(key, cur_id)) {
           set_status() << "can't do op, sync already in progress for object";
           ldout(sync_env->cct, 20) << __func__ << ": skipping sync of entry: " << cur_id << ":" << key << " sync already in progress for object" << dendl;
@@ -2569,6 +2575,7 @@ int RGWBucketShardIncrementalSyncCR::operate()
               ldout(sync_env->cct, 0) << "ERROR: a sync operation returned error" << dendl;
               sync_status = ret;
               /* we have reported this error */
+	      //这里出错了，到底怎么处理呢?出错了还往前继续么?
             }
             /* not waiting for child here */
           }

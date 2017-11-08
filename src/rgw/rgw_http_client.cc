@@ -633,6 +633,7 @@ void RGWHTTPManager::unlink_request(rgw_http_req_data *req_data)
 void RGWHTTPManager::manage_pending_requests()
 {
   reqs_lock.get_read();
+  //说明没有新增req,或者remove的req
   if (max_threaded_req == num_reqs && unregistered_reqs.empty()) {
     reqs_lock.unlock();
     return;

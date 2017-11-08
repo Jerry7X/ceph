@@ -2086,8 +2086,10 @@ public:
     RGWObjVersionTracker old_ot;
     RGWObjectCtx obj_ctx(store);
 
+    //这函数什么地方会返回ECANCELED
     string tenant_name, bucket_name;
     parse_bucket(entry, tenant_name, bucket_name);
+    //这里maybe
     int ret = store->get_bucket_entrypoint_info(obj_ctx, tenant_name, bucket_name, old_be, &old_ot, &orig_mtime, &attrs);
     if (ret < 0 && ret != -ENOENT)
       return ret;

@@ -1048,6 +1048,7 @@ int RGWPutObj_ObjStore::get_padding_last_aws4_chunk_encoded(bufferlist &bl, uint
 int RGWPutObj_ObjStore::get_data(bufferlist& bl)
 {
   size_t cl;
+  //XQ : 这里的chunked是干啥的
   uint64_t chunk_size = s->cct->_conf->rgw_max_chunk_size;
   if (s->length) {
     cl = atoll(s->length) - ofs;

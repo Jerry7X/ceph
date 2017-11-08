@@ -2342,6 +2342,7 @@ int RGWPutObjProcessor_Atomic::handle_data(bufferlist& bl, off_t ofs, MD5 *hash,
   /* do we have enough data pending accumulated that needs to be written? */
   *again = (pending_data_bl.length() >= max_chunk_size);
 
+  //XRCM:reserve the first chunk
   if (!data_ofs && !immutable_head()) {
     first_chunk.claim(bl);
     obj_len = (uint64_t)first_chunk.length();
@@ -2397,8 +2398,10 @@ int RGWPutObjProcessor_Atomic::prepare(RGWRados *store, string *oid_rand)
   head_obj.init(bucket, obj_str);
 
   if (!version_id.empty()) {
+    //这里只有fetch_remote_obj and copy_obj_data comes
     head_obj.set_instance(version_id);
   } else if (versioned_object) {
+    //JERRY :so version object name comes from here
     store->gen_rand_obj_instance_name(&head_obj);
   }
 
@@ -2495,6 +2498,7 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, real_time *mtime, real_
   if (r < 0)
     return r;
 
+  //XRCM:to here, except first chunk, others write complete
   obj_ctx.set_atomic(head_obj);
 
   RGWRados::Object op_target(store, bucket_info, obj_ctx, head_obj);
@@ -2504,6 +2508,8 @@ int RGWPutObjProcessor_Atomic::do_complete(string& etag, real_time *mtime, real_
 
   RGWRados::Object::Write obj_op(&op_target);
 
+  
+  //XRCM: first chunk on the head obj
   obj_op.meta.data = &first_chunk;
   obj_op.meta.manifest = &manifest;
   obj_op.meta.ptag = &unique_tag; /* use req_id as operation tag */
@@ -7546,6 +7552,7 @@ void RGWRados::update_gc_chain(rgw_obj& head_obj, RGWObjManifest& manifest, cls_
   RGWObjManifest::obj_iterator iter;
   for (iter = manifest.obj_begin(); iter != manifest.obj_end(); ++iter) {
     const rgw_obj& mobj = iter.get_location();
+    //看来head不是在这里删除的
     if (mobj == head_obj)
       continue;
     string oid, loc;
@@ -8158,6 +8165,7 @@ int RGWRados::get_system_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState
 
 int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, bool follow_olh)
 {
+  //what is follow_olh?
   bool need_follow_olh = follow_olh && !obj.have_instance();
 
   RGWObjState *s = rctx->get_state(obj);
@@ -8467,6 +8475,7 @@ void RGWRados::Object::invalidate_state()
   ctx.invalidate(obj);
 }
 
+//XRCM: compare write to implement atomic
 int RGWRados::Object::prepare_atomic_modification(ObjectWriteOperation& op, bool reset_obj, const string *ptag,
                                                   const char *if_match, const char *if_nomatch, bool removal_op)
 {
@@ -8474,6 +8483,8 @@ int RGWRados::Object::prepare_atomic_modification(ObjectWriteOperation& op, bool
   if (r < 0)
     return r;
 
+  //XRWHY: need guard? changed by other client? 
+  //yes, protect head obj
   bool need_guard = (state->has_manifest || (state->obj_tag.length() != 0) ||
                      if_match != NULL || if_nomatch != NULL) &&
                      (!state->fake_tag);
@@ -8483,6 +8494,7 @@ int RGWRados::Object::prepare_atomic_modification(ObjectWriteOperation& op, bool
 
     if (reset_obj) {
       op.create(false);
+      //XRWHY: if create,the attr is not there?
       store->remove_rgw_head_obj(op); // we're not dropping reference here, actually removing object
     }
 
@@ -8492,6 +8504,7 @@ int RGWRados::Object::prepare_atomic_modification(ObjectWriteOperation& op, bool
   if (need_guard) {
     /* first verify that the object wasn't replaced under */
     if (if_nomatch == NULL || strcmp(if_nomatch, "*") != 0) {
+      //XRCM:if cmp fail,do not do op
       op.cmpxattr(RGW_ATTR_ID_TAG, LIBRADOS_CMPXATTR_OP_EQ, state->obj_tag); 
       // FIXME: need to add FAIL_NOTEXIST_OK for racing deletion
     }
@@ -10081,6 +10094,7 @@ int RGWRados::apply_olh_log(RGWObjectCtx& obj_ctx, RGWObjState& state, RGWBucket
        liter != remove_instances.end(); ++liter) {
     cls_rgw_obj_key& key = *liter;
     rgw_obj obj_instance(bucket, key);
+    //不同版本的删除，如何通过instance体现?
     int ret = delete_obj(obj_ctx, bucket_info, obj_instance, 0, RGW_BILOG_FLAG_VERSIONED_OP);
     if (ret < 0 && ret != -ENOENT) {
       ldout(cct, 0) << "ERROR: delete_obj() returned " << ret << " obj_instance=" << obj_instance << dendl;
@@ -10408,6 +10422,7 @@ int RGWRados::follow_olh(RGWObjectCtx& obj_ctx, RGWObjState *state, rgw_obj& olh
       return ret;
     }
   }
+  //XRCM : we can apply or not, both is consistency , this depend on rgw_olh_pending_timeout_sec.
   if (!pending_entries.empty()) {
     ldout(cct, 20) << __func__ << "(): found pending entries, need to update_olh() on bucket=" << olh_obj.bucket << dendl;
 
@@ -11859,6 +11874,7 @@ int RGWRados::check_disk_state(librados::IoCtx io_ctx,
     }
   }
 
+  //XRWHY?
   if (astate->has_manifest) {
     RGWObjManifest::obj_iterator miter;
     RGWObjManifest& manifest = astate->manifest;
