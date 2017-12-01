@@ -2522,6 +2522,7 @@ int RGWBucketShardIncrementalSyncCR::operate()
         updated_status = false;
 	//遇到冲突的情况
 	//这里出现死循环了
+	//XRCM : here maybe need to use key.name? how to keep order for different instance?
         while (!marker_tracker->can_do_op(key) && (sync_status == 0)) {
           if (!updated_status) {
             set_status() << "can't do op, conflicting inflight operation";

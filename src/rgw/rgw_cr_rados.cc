@@ -539,6 +539,7 @@ int RGWAsyncRemoveObj::_send_request()
 
   RGWObjState *state;
 
+  //XRCM : why need follow olh here?
   int ret = store->get_obj_state(&obj_ctx, obj, &state);
   if (ret < 0) {
     ldout(store->ctx(), 20) << __func__ << "(): get_obj_state() obj=" << obj << " returned ret=" << ret << dendl;

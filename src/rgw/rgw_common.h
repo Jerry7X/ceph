@@ -1436,6 +1436,7 @@ public:
   std::string index_hash_source;
 
   rgw_obj() : in_extra_data(false) {}
+  //XRCM : "null" instance object will not include null string.
   rgw_obj(rgw_bucket& b, const std::string& o) : in_extra_data(false) {
     init(b, o);
   }

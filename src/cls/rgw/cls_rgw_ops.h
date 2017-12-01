@@ -26,7 +26,7 @@ struct rgw_cls_tag_timeout_op
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_tag_timeout_op*>& ls);
 };
-WRITE_CLASS_ENCODER(rgw_cls_tag_timeout_op)
+//WRITE_CLASS_ENCODER(rgw_cls_tag_timeout_op)
 
 struct rgw_cls_obj_prepare_op
 {
@@ -76,7 +76,7 @@ struct rgw_cls_obj_prepare_op
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_obj_prepare_op*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_prepare_op)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_prepare_op)
 
 struct rgw_cls_obj_complete_op
 {
@@ -154,7 +154,7 @@ struct rgw_cls_obj_complete_op
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_obj_complete_op*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_complete_op)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_complete_op)
 
 struct rgw_cls_link_olh_op {
   cls_rgw_obj_key key;
@@ -214,7 +214,7 @@ struct rgw_cls_link_olh_op {
   static void generate_test_instances(list<rgw_cls_link_olh_op *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_link_olh_op)
+//WRITE_CLASS_ENCODER(rgw_cls_link_olh_op)
 
 struct rgw_cls_unlink_instance_op {
   cls_rgw_obj_key key;
@@ -253,7 +253,7 @@ struct rgw_cls_unlink_instance_op {
   static void generate_test_instances(list<rgw_cls_unlink_instance_op *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_unlink_instance_op)
+//WRITE_CLASS_ENCODER(rgw_cls_unlink_instance_op)
 
 struct rgw_cls_read_olh_log_op
 {
@@ -280,7 +280,7 @@ struct rgw_cls_read_olh_log_op
   static void generate_test_instances(list<rgw_cls_read_olh_log_op *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_read_olh_log_op)
+//WRITE_CLASS_ENCODER(rgw_cls_read_olh_log_op)
 
 
 struct rgw_cls_read_olh_log_ret
@@ -305,7 +305,7 @@ struct rgw_cls_read_olh_log_ret
   static void generate_test_instances(list<rgw_cls_read_olh_log_ret *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_read_olh_log_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_read_olh_log_ret)
 
 struct rgw_cls_trim_olh_log_op
 {
@@ -332,7 +332,7 @@ struct rgw_cls_trim_olh_log_op
   static void generate_test_instances(list<rgw_cls_trim_olh_log_op *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_trim_olh_log_op)
+//WRITE_CLASS_ENCODER(rgw_cls_trim_olh_log_op)
 
 struct rgw_cls_bucket_clear_olh_op {
   cls_rgw_obj_key key;
@@ -357,7 +357,7 @@ struct rgw_cls_bucket_clear_olh_op {
   static void generate_test_instances(list<rgw_cls_bucket_clear_olh_op *>& o);
   void dump(Formatter *f) const;
 };
-WRITE_CLASS_ENCODER(rgw_cls_bucket_clear_olh_op)
+//WRITE_CLASS_ENCODER(rgw_cls_bucket_clear_olh_op)
 
 struct rgw_cls_list_op
 {
@@ -393,7 +393,7 @@ struct rgw_cls_list_op
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_list_op*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_list_op)
+//WRITE_CLASS_ENCODER(rgw_cls_list_op)
 
 struct rgw_cls_list_ret
 {
@@ -417,7 +417,7 @@ struct rgw_cls_list_ret
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_list_ret*>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_list_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_list_ret)
 
 struct rgw_cls_check_index_ret
 {
@@ -441,7 +441,7 @@ struct rgw_cls_check_index_ret
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_check_index_ret *>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_check_index_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_check_index_ret)
 
 struct rgw_cls_bucket_update_stats_op
 {
@@ -465,7 +465,7 @@ struct rgw_cls_bucket_update_stats_op
   void dump(Formatter *f) const;
   static void generate_test_instances(list<rgw_cls_bucket_update_stats_op *>& o);
 };
-WRITE_CLASS_ENCODER(rgw_cls_bucket_update_stats_op)
+//WRITE_CLASS_ENCODER(rgw_cls_bucket_update_stats_op)
 
 struct rgw_cls_obj_remove_op {
   list<string> keep_attr_prefixes;
@@ -482,7 +482,7 @@ struct rgw_cls_obj_remove_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_remove_op)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_remove_op)
 
 struct rgw_cls_obj_store_pg_ver_op {
   string attr;
@@ -499,7 +499,7 @@ struct rgw_cls_obj_store_pg_ver_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_store_pg_ver_op)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_store_pg_ver_op)
 
 struct rgw_cls_obj_check_attrs_prefix {
   string check_prefix;
@@ -521,7 +521,7 @@ struct rgw_cls_obj_check_attrs_prefix {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_check_attrs_prefix)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_check_attrs_prefix)
 
 struct rgw_cls_obj_check_mtime {
   ceph::real_time mtime;
@@ -550,7 +550,7 @@ struct rgw_cls_obj_check_mtime {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_obj_check_mtime)
+//WRITE_CLASS_ENCODER(rgw_cls_obj_check_mtime)
 
 struct rgw_cls_usage_log_add_op {
   rgw_usage_log_info info;
@@ -574,7 +574,7 @@ struct rgw_cls_usage_log_add_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_usage_log_add_op)
+//WRITE_CLASS_ENCODER(rgw_cls_usage_log_add_op)
 
 struct rgw_cls_bi_get_op {
   cls_rgw_obj_key key;
@@ -598,7 +598,7 @@ struct rgw_cls_bi_get_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_get_op)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_get_op)
 
 struct rgw_cls_bi_get_ret {
   rgw_cls_bi_entry entry;
@@ -617,7 +617,7 @@ struct rgw_cls_bi_get_ret {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_get_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_get_ret)
 
 struct rgw_cls_bi_put_op {
   rgw_cls_bi_entry entry;
@@ -636,7 +636,7 @@ struct rgw_cls_bi_put_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_put_op)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_put_op)
 
 struct rgw_cls_bi_list_op {
   uint32_t max;
@@ -661,7 +661,7 @@ struct rgw_cls_bi_list_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_list_op)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_list_op)
 
 struct rgw_cls_bi_list_ret {
   list<rgw_cls_bi_entry> entries;
@@ -683,7 +683,7 @@ struct rgw_cls_bi_list_ret {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_bi_list_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_bi_list_ret)
 
 struct rgw_cls_usage_log_read_op {
   uint64_t start_epoch;
@@ -713,7 +713,7 @@ struct rgw_cls_usage_log_read_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_usage_log_read_op)
+//WRITE_CLASS_ENCODER(rgw_cls_usage_log_read_op)
 
 struct rgw_cls_usage_log_read_ret {
   map<rgw_user_bucket, rgw_usage_log_entry> usage;
@@ -736,7 +736,7 @@ struct rgw_cls_usage_log_read_ret {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_usage_log_read_ret)
+//WRITE_CLASS_ENCODER(rgw_cls_usage_log_read_ret)
 
 struct rgw_cls_usage_log_trim_op {
   uint64_t start_epoch;
@@ -759,7 +759,7 @@ struct rgw_cls_usage_log_trim_op {
     DECODE_FINISH(bl);
   }
 };
-WRITE_CLASS_ENCODER(rgw_cls_usage_log_trim_op)
+//WRITE_CLASS_ENCODER(rgw_cls_usage_log_trim_op)
 
 struct cls_rgw_gc_set_entry_op {
   uint32_t expiration_secs;
@@ -783,7 +783,7 @@ struct cls_rgw_gc_set_entry_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_gc_set_entry_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_set_entry_op)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_set_entry_op)
 
 struct cls_rgw_gc_defer_entry_op {
   uint32_t expiration_secs;
@@ -807,7 +807,7 @@ struct cls_rgw_gc_defer_entry_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_gc_defer_entry_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_defer_entry_op)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_defer_entry_op)
 
 struct cls_rgw_gc_list_op {
   string marker;
@@ -837,7 +837,7 @@ struct cls_rgw_gc_list_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_gc_list_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_list_op)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_list_op)
 
 struct cls_rgw_gc_list_ret {
   list<cls_rgw_gc_obj_info> entries;
@@ -862,7 +862,7 @@ struct cls_rgw_gc_list_ret {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_gc_list_ret*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_list_ret)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_list_ret)
 
 struct cls_rgw_gc_remove_op {
   list<string> tags;
@@ -884,7 +884,7 @@ struct cls_rgw_gc_remove_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_gc_remove_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_gc_remove_op)
+//WRITE_CLASS_ENCODER(cls_rgw_gc_remove_op)
 
 struct cls_rgw_bi_log_list_op {
   string marker;
@@ -909,7 +909,7 @@ struct cls_rgw_bi_log_list_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_bi_log_list_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_bi_log_list_op)
+//WRITE_CLASS_ENCODER(cls_rgw_bi_log_list_op)
 
 struct cls_rgw_bi_log_trim_op {
   string start_marker;
@@ -934,7 +934,7 @@ struct cls_rgw_bi_log_trim_op {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_bi_log_trim_op*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_bi_log_trim_op)
+//WRITE_CLASS_ENCODER(cls_rgw_bi_log_trim_op)
 
 struct cls_rgw_bi_log_list_ret {
   list<rgw_bi_log_entry> entries;
@@ -959,6 +959,6 @@ struct cls_rgw_bi_log_list_ret {
   void dump(Formatter *f) const;
   static void generate_test_instances(list<cls_rgw_bi_log_list_ret*>& ls);
 };
-WRITE_CLASS_ENCODER(cls_rgw_bi_log_list_ret)
+//WRITE_CLASS_ENCODER(cls_rgw_bi_log_list_ret)
 
 #endif /* CEPH_CLS_RGW_OPS_H */

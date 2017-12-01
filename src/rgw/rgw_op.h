@@ -115,7 +115,8 @@ protected:
   off_t start;
   off_t end;
   ceph::real_time mod_time;
-  ceph::real_time lastmod;
+  //XRCM: object mtime
+  ceph::real_time lastmod; 
   ceph::real_time unmod_time;
   ceph::real_time *mod_ptr;
   ceph::real_time *unmod_ptr;

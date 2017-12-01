@@ -172,6 +172,7 @@ int RGWGetObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t bl_ofs,
       s->info.args.exists(RGW_SYS_PARAM_PREFIX "prepend-metadata")) {
 
     /* JSON encode object metadata */
+    //XRWHY: this metadata not used?
     JSONFormatter jf;
     jf.open_object_section("obj_metadata");
     encode_json("attrs", attrs, &jf);

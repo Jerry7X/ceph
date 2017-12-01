@@ -492,6 +492,7 @@ struct rgw_bi_log_entry {
   string object;
   string instance;
   ceph::real_time timestamp;
+  //XRCM: if pool is < 0, epoch is olh_epoch
   rgw_bucket_entry_ver ver;
   RGWModifyOp op;
   RGWPendingState state;

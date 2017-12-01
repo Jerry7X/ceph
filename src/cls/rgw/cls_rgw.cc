@@ -277,7 +277,10 @@ static void encode_obj_versioned_data_key(const cls_rgw_obj_key& key, string *in
   index_key->append(key.name);
   string delim("\0i", 2);
   index_key->append(delim);
-  index_key->append(key.instance);
+  //XRCM : should add check here
+  if (key.instance != "null")
+    index_key->append(key.instance);
+  //XRCM:so it is delete
   if (append_delete_marker_suffix) {
     string dm("\0d", 2);
     index_key->append(dm);
@@ -785,6 +788,7 @@ static int read_key_entry(cls_method_context_t hctx, cls_rgw_obj_key& key, strin
     return rc;
   }
 
+  //XRCM : so delete will use old idx if instance is "null".
   if (key.instance.empty() &&
       entry->flags & RGW_BUCKET_DIRENT_FLAG_VER_MARKER) {
     /* we only do it where key.instance is empty. In this case the delete marker will have a
@@ -797,6 +801,7 @@ static int read_key_entry(cls_method_context_t hctx, cls_rgw_obj_key& key, strin
         return 0;
       }
     }
+    //XRWHY: below is duplicated with this function head part?
     encode_obj_versioned_data_key(key, idx);
     rc = read_index_entry(hctx, *idx, entry);
     if (rc < 0) {
@@ -1355,7 +1360,7 @@ static int convert_plain_entry_to_versioned(cls_method_context_t hctx, cls_rgw_o
     if (demote_current) {
       entry.flags &= ~RGW_BUCKET_DIRENT_FLAG_CURRENT;
     }
-
+    //XRCM : so convert abc.jpg to abc.jpgi
     string new_idx;
     encode_obj_versioned_data_key(key, &new_idx);
 
@@ -1406,10 +1411,13 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
     return -EINVAL;
   }
 
+  //XRCM: if version suspend, here need avoid do op on object placeholder
   BIVerObjEntry obj(hctx, op.key);
   BIOLHEntry olh(hctx, op.key);
 
   /* read instance entry */
+  //XRCM:if delete and olh(if version suspend) or null instance, obj will use key.nameid
+  //if versioned not suspend, set_olh will use new instance or given instance
   int ret = obj.init(op.delete_marker);
   bool existed = (ret == 0);
   if (ret == -ENOENT && op.delete_marker) {
@@ -1439,10 +1447,13 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
    * if we got to overwrite a previous entry, and in that case we'll remove its list entry.
    */
   if (op.key.instance.empty()) {
+    //XRCM:这段说白了就是清理以前的null instance index
+    //其他非null instance的instance is not need, will key the key
     BIVerObjEntry other_obj(hctx, op.key);
     ret = other_obj.init(!op.delete_marker); /* try reading the other null versioned entry */
     existed = (ret >= 0 && !other_obj.is_delete_marker());
     if (ret >= 0 && other_obj.is_delete_marker() != op.delete_marker) {
+      //XRCM:如果有delete marker,或者目前要执行delete，都clear index
       ret = other_obj.unlink_list_entry();
       if (ret < 0) {
         return ret;
@@ -1458,6 +1469,7 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
     removing = (existed && !obj.is_delete_marker() && op.delete_marker);
   }
 
+  //XRCM : delete_marker means this is a delete op 
   if (op.delete_marker) {
     /* a deletion marker, need to initialize entry as such */
     obj.init_as_delete_marker(op.meta);
@@ -1470,7 +1482,8 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
     return ret;
   }
 
-  //这里是处理什么并发情况?
+  //这里是处理什么并发情况? 这里就是处理fetch or copy or delete old version
+  //and fetch data already done
   if (!olh.start_modify(op.olh_epoch)) {
     ret = obj.write(op.olh_epoch, false);
     if (ret < 0) {
@@ -1520,6 +1533,7 @@ static int rgw_bucket_link_olh(cls_method_context_t hctx, bufferlist *in, buffer
   /* update the olh log */
   olh.update_log(CLS_RGW_OLH_OP_LINK_OLH, op.op_tag, op.key, op.delete_marker);
   if (removing) {
+    //XRCM : delete obj instance
     olh.update_log(CLS_RGW_OLH_OP_REMOVE_INSTANCE, op.op_tag, op.key, false);
   }
 
@@ -1592,10 +1606,12 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
   }
 
   cls_rgw_obj_key dest_key = op.key;
+  //XRCM: boring!!
   if (dest_key.instance == "null") {
     dest_key.instance.clear();
   }
 
+  //XRWHY: i do not know why clear null? no matter, it will not take placeholder as instance. see read_key_entry
   BIVerObjEntry obj(hctx, dest_key);
   BIOLHEntry olh(hctx, dest_key);
 
@@ -1629,12 +1645,16 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
     obj.set_epoch(1);
   }
 
+  //XRCM : check if change olh
+  //XRWHY: when i delete version from s3 browser, the olh epoch is 0
   if (!olh.start_modify(op.olh_epoch)) {
+    // and it never go in this branch true because candidate_epoch is 0
     ret = obj.unlink_list_entry();
     if (ret < 0) {
       return ret;
     }
 
+    //XRCM:delete marker do not have obj instance
     if (!obj.is_delete_marker()) {
       olh.update_log(CLS_RGW_OLH_OP_REMOVE_INSTANCE, op.op_tag, op.key, false, op.olh_epoch);
     }
@@ -1651,7 +1671,7 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
     /* this is the current head, need to update! */
     cls_rgw_obj_key next_key;
     bool found;
-    //通过这个查找一个新的current,简单粗暴，使用搜索方式解决
+    //XRCM：通过这个查找一个新的current,简单粗暴，使用搜索方式解决
     ret = obj.find_next_key(&next_key, &found);
     if (ret < 0) {
       CLS_LOG(0, "ERROR: obj.find_next_key() returned ret=%d", ret);
@@ -1708,9 +1728,11 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
   }
 
   if (op.log_op) {
+    //XRCM : deliberately create a ver for sync?
     rgw_bucket_entry_ver ver;
     ver.epoch = (op.olh_epoch ? op.olh_epoch : olh.get_epoch());
 
+    //XRCM : this log not used for keep consistent
     real_time mtime = real_clock::now(); /* mtime has no real meaning in instance removal context */
     ret = log_index_operation(hctx, op.key, CLS_RGW_OP_UNLINK_INSTANCE, op.op_tag,
                               mtime, ver,

@@ -2303,6 +2303,7 @@ public:
         int flags;
         const char *if_match;
         const char *if_nomatch;
+		//XRCM: set it when we fetch or copy an object.
         uint64_t olh_epoch;
         ceph::real_time delete_at;
         bool canceled;

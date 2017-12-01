@@ -2402,6 +2402,7 @@ int RGWPutObjProcessor_Atomic::prepare(RGWRados *store, string *oid_rand)
     head_obj.set_instance(version_id);
   } else if (versioned_object) {
     //JERRY :so version object name comes from here
+    //XRCM : RGWPutObj::select_processor set versioned_object use versioning_enabled()
     store->gen_rand_obj_instance_name(&head_obj);
   }
 
@@ -6175,6 +6176,7 @@ int RGWRados::Object::Write::write_meta(uint64_t size,
     meta.set_mtime = real_clock::now();
   }
 
+  //XRCM:so we can avoid to remove OLD ID TAG,otherwise set_olh will failed because of olh tag not match with BIOLHEntry
   if (state->is_olh) {
     op.setxattr(RGW_ATTR_OLH_ID_TAG, state->olh_tag);
   }
@@ -7809,6 +7811,7 @@ int RGWRados::Object::Delete::delete_obj()
   bool explicit_marker_version = (!params.marker_version_id.empty());
 
   if (params.versioning_status & BUCKET_VERSIONED || explicit_marker_version) {
+    //XRCM : so be clear,if we remove with instance(include null instance), we call set_olh
     if (instance.empty() || explicit_marker_version) {
       rgw_obj marker = obj;
 
@@ -7816,6 +7819,9 @@ int RGWRados::Object::Delete::delete_obj()
         if (params.marker_version_id != "null") {
           marker.set_instance(params.marker_version_id);
         }
+      //XRWHY:so if suspend,delete will direct on null instance,but maybe the null instance is an older version.
+      //why ? we should only make a delete marker, otherwise, we can not rollback, or find older version.
+      // should see a null instance as a version too!
       } else if ((params.versioning_status & BUCKET_VERSIONS_SUSPENDED) == 0) {
         store->gen_rand_obj_instance_name(&marker);
       }
@@ -7841,11 +7847,15 @@ int RGWRados::Object::Delete::delete_obj()
     } else {
       rgw_bucket_dir_entry dirent;
 
+      //XRWHY: clear "null" instance before this?
+      //if do not clear, it will find 1000_xxinull? no this bi entry
+      //i think it is wrong here,we should not get the place holder as null instance
       int r = store->bi_get_instance(obj, &dirent);
       if (r < 0) {
         return r;
       }
       result.delete_marker = dirent.is_delete_marker();
+      //XRCM: unlink instance is pure op on obj instance,not olh
       r = store->unlink_obj_instance(target->get_ctx(), target->get_bucket_info(), obj, params.olh_epoch);
       if (r < 0) {
         return r;
@@ -8278,6 +8288,8 @@ int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState *
     s->olh_tag = iter->second;
   }
 
+  //XRWHY : how can we know we want get null instance,not olh 
+  //if there no null instance,but we try to get it
   if (is_olh(s->attrset)) {
     s->is_olh = true;
 
@@ -8285,6 +8297,10 @@ int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState *
 
     if (need_follow_olh) {
       return get_olh_target_state(*rctx, obj, s, state);
+    } 
+    //XRCM,if do not follow olh,and instance is not empty
+    //we should return -ENOENT
+      else {
     }
   }
 
@@ -8495,6 +8511,7 @@ int RGWRados::Object::prepare_atomic_modification(ObjectWriteOperation& op, bool
     if (reset_obj) {
       op.create(false);
       //XRWHY: if create,the attr is not there?
+      //XRCM:so when overwrite an object, the http headers will not be there
       store->remove_rgw_head_obj(op); // we're not dropping reference here, actually removing object
     }
 
@@ -10415,6 +10432,7 @@ int RGWRados::follow_olh(RGWObjectCtx& obj_ctx, RGWObjState *state, rgw_obj& olh
   map<string, bufferlist> rm_pending_entries;
   check_pending_olh_entries(pending_entries, &rm_pending_entries);
 
+  //XRWHY: maybe all to old? how to trigger apply olh then?
   if (!rm_pending_entries.empty()) {
     int ret = remove_olh_pending_entries(*state, olh_obj, rm_pending_entries);
     if (ret < 0) {
