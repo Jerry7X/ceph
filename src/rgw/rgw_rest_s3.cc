@@ -493,8 +493,11 @@ void RGWListBucket_ObjStore_S3::send_versioned_response()
   s->formatter->dump_string("Name", s->bucket_name);
   s->formatter->dump_string("Prefix", prefix);
   s->formatter->dump_string("KeyMarker", marker.name);
-  if (is_truncated && !next_marker.empty())
+  s->formatter->dump_string("VersionIdMarker", marker.instance);
+  if (is_truncated && !next_marker.empty()) {
     s->formatter->dump_string("NextKeyMarker", next_marker.name);
+    s->formatter->dump_string("NextVersionIdMarker", next_marker.instance);
+  }
   s->formatter->dump_int("MaxKeys", max);
   if (!delimiter.empty())
     s->formatter->dump_string("Delimiter", delimiter);
@@ -1073,6 +1076,7 @@ int RGWPutObj_ObjStore_S3::get_params()
   /* handle x-amz-copy-source */
 
   if (copy_source) {
+    if (*copy_source == '/') ++copy_source;
     copy_source_bucket_name = copy_source;
     pos = copy_source_bucket_name.find("/");
     if (pos == std::string::npos) {
@@ -1746,7 +1750,11 @@ int RGWPostObj_ObjStore_S3::get_params()
   env.add_var("key", s->object.name);
 
   part_str("Content-Type", &content_type);
-  env.add_var("Content-Type", content_type);
+
+  /* AWS permits POST without Content-Type: http://tracker.ceph.com/issues/20201 */
+  if (! content_type.empty()) {
+    env.add_var("Content-Type", content_type);
+  }
 
   map<string, struct post_form_part, ltstr_nocase>::iterator piter =
     parts.upper_bound(RGW_AMZ_META_PREFIX);
@@ -2283,6 +2291,7 @@ void RGWCopyObj_ObjStore_S3::send_partial_response(off_t ofs)
     dump_errno(s);
 
     end_header(s, this, "application/xml");
+    dump_start(s);
     if (op_ret == 0) {
       s->formatter->open_object_section_in_ns("CopyObjectResult", XMLNS_AWS_S3);
     }
@@ -2439,6 +2448,12 @@ int RGWPutCORS_ObjStore_S3::get_params()
   if (!cors_config) {
     r = -EINVAL;
     goto done_err;
+  }
+
+  // forward bucket cors requests to meta master zone
+  if (!store->is_meta_master()) {
+    /* only need to keep this data around if we're not meta master */
+    in_data.append(data, len);
   }
 
   if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 15)) {
@@ -3213,8 +3228,12 @@ int RGWHandler_REST_S3::init(RGWRados *store, struct req_state *s,
 
   const char *copy_source = s->info.env->get("HTTP_X_AMZ_COPY_SOURCE");
 
-  if (copy_source && !s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE")) {
-    ret = RGWCopyObj::parse_copy_location(copy_source,
+  if (copy_source && 
+      (! s->info.env->get("HTTP_X_AMZ_COPY_SOURCE_RANGE")) &&
+      (! s->info.args.exists("uploadId"))) {
+    std::string url_decode_copy_source;
+    url_decode(copy_source, url_decode_copy_source);
+    ret = RGWCopyObj::parse_copy_location(url_decode_copy_source,
                                           s->init_state.src_bucket,
                                           s->src_object);
     if (!ret) {
@@ -3379,7 +3398,14 @@ int RGW_Auth_S3::authorize(RGWRados *store, struct req_state *s)
       if (algorithm != "AWS4-HMAC-SHA256") {
         return -EPERM;
       }
-      return authorize_v4(store, s);
+      /* compute first aws4 signature (stick to the boto2 implementation) */
+      int err = authorize_v4(store, s);
+      if ((err==-ERR_SIGNATURE_NO_MATCH) && !store->ctx()->_conf->rgw_s3_auth_aws4_force_boto2_compat) {
+        /* compute second aws4 signature (no bugs supported) */
+        ldout(s->cct, 10) << "computing second aws4 signature..." << dendl;
+        return authorize_v4(store, s, false);
+      }
+      return err;
     }
 
     /* AWS2 */
@@ -3534,7 +3560,7 @@ static std::array<string, 3> aws4_presigned_required_keys = { "Credential", "Sig
 /*
  * handle v4 signatures (rados auth only)
  */
-int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s)
+int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s, bool force_boto2_compat /* = true */)
 {
   string::size_type pos;
   bool using_qs;
@@ -3734,6 +3760,8 @@ int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s)
 
   if (!s->aws4_auth->canonical_qs.empty()) {
 
+    boost::replace_all(s->aws4_auth->canonical_qs, "+", "%20");
+
     /* handle case when query string exists. Step 3 in
      * http://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html */
 
@@ -3752,18 +3780,10 @@ int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s)
         if (key != "X-Amz-Credential") {
           string key_decoded;
           url_decode(key, key_decoded);
-          if (key.length() != key_decoded.length()) {
-            encoded_key = key;
-          } else {
-            aws4_uri_encode(key, encoded_key);
-          }
+          aws4_uri_encode(key_decoded, encoded_key);
           string val_decoded;
           url_decode(val, val_decoded);
-          if (val.length() != val_decoded.length()) {
-            encoded_val = val;
-          } else {
-            aws4_uri_encode(val, encoded_val);
-          }
+          aws4_uri_encode(val_decoded, encoded_val);
         } else {
           encoded_key = key;
           encoded_val = val;
@@ -3819,7 +3839,7 @@ int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s)
       }
     }
     string token_value = string(t);
-    if (using_qs && (token == "host")) {
+    if (force_boto2_compat && using_qs && (token == "host")) {
       if (!secure_port.empty()) {
 	if (secure_port != "443")
 	  token_value = token_value + ":" + secure_port;
@@ -4285,6 +4305,43 @@ RGWHandler_REST* RGWRESTMgr_S3::get_handler(struct req_state *s)
   return handler;
 }
 
+bool RGWHandler_REST_S3Website::web_dir() const {
+  std::string subdir_name;
+  url_decode(s->object.name, subdir_name);
+
+  if (subdir_name.empty()) {
+    return false;
+  } else if (subdir_name.back() == '/') {
+    subdir_name.pop_back();
+  }
+
+  rgw_obj obj(s->bucket, subdir_name);
+
+  RGWObjectCtx& obj_ctx = *static_cast<RGWObjectCtx *>(s->obj_ctx);
+  obj_ctx.set_atomic(obj);
+  obj_ctx.set_prefetch_data(obj);
+
+  RGWObjState* state = nullptr;
+  if (store->get_obj_state(&obj_ctx, obj, &state, false) < 0) {
+    return false;
+  }
+  if (! state->exists) {
+    return false;
+  }
+  return state->exists;
+}
+
+int RGWHandler_REST_S3Website::init(RGWRados *store, req_state *s,
+                                    RGWClientIO* cio)
+{
+  // save the original object name before retarget() replaces it with the
+  // result of get_effective_key(). the error_handler() needs the original
+  // object name for redirect handling
+  original_object_name = s->object.name;
+
+  return RGWHandler_REST_S3::init(store, s, cio);
+}
+
 int RGWHandler_REST_S3Website::retarget(RGWOp* op, RGWOp** new_op) {
   *new_op = op;
   ldout(s->cct, 10) << __func__ << "Starting retarget" << dendl;
@@ -4306,7 +4363,7 @@ int RGWHandler_REST_S3Website::retarget(RGWOp* op, RGWOp** new_op) {
   }
 
   rgw_obj_key new_obj;
-  s->bucket_info.website_conf.get_effective_key(s->object.name, &new_obj.name);
+  s->bucket_info.website_conf.get_effective_key(s->object.name, &new_obj.name, web_dir());
   ldout(s->cct, 10) << "retarget get_effective_key " << s->object << " -> "
 		    << new_obj << dendl;
 
@@ -4434,16 +4491,16 @@ int RGWHandler_REST_S3Website::error_handler(int err_no,
 
   RGWBWRoutingRule rrule;
   bool should_redirect =
-    s->bucket_info.website_conf.should_redirect(s->object.name, http_error_code,
-						&rrule);
+    s->bucket_info.website_conf.should_redirect(original_object_name,
+                                                http_error_code, &rrule);
 
   if (should_redirect) {
     const string& hostname = s->info.env->get("HTTP_HOST", "");
     const string& protocol =
       (s->info.env->get("SERVER_PORT_SECURE") ? "https" : "http");
     int redirect_code = 0;
-    rrule.apply_rule(protocol, hostname, s->object.name, &s->redirect,
-		    &redirect_code);
+    rrule.apply_rule(protocol, hostname, original_object_name,
+                     &s->redirect, &redirect_code);
     // Apply a custom HTTP response code
     if (redirect_code > 0)
       s->err.http_ret = redirect_code; // Apply a custom HTTP response code

@@ -279,6 +279,7 @@ TEST_P(StoreTest, FiemapHoles) {
     ASSERT_EQ(r, 0);
   }
   {
+    //fiemap test from 0 to SKIP_STEP * (MAX_EXTENTS - 1) + 3
     bufferlist bl;
     store->fiemap(cid, oid, 0, SKIP_STEP * (MAX_EXTENTS - 1) + 3, bl);
     map<uint64_t,uint64_t> m, e;
@@ -287,14 +288,39 @@ TEST_P(StoreTest, FiemapHoles) {
     cout << " got " << m << std::endl;
     ASSERT_TRUE(!m.empty());
     ASSERT_GE(m[0], 3u);
-    bool extents_exist = true;
-    if (m.size() == MAX_EXTENTS) {
-      for (uint64_t i = 0; i < MAX_EXTENTS; i++)
-        extents_exist = extents_exist && m.count(SKIP_STEP*i);
+    auto last = m.crbegin();
+    if (m.size() == 1) {
+      ASSERT_EQ(0u, last->first);
+    } else if (m.size() == MAX_EXTENTS) {
+      for (uint64_t i = 0; i < MAX_EXTENTS; i++) {
+        ASSERT_TRUE(m.count(SKIP_STEP * i));
+      }
     }
-    ASSERT_TRUE((m.size() == 1 &&
-		 m[0] > SKIP_STEP * (MAX_EXTENTS - 1)) ||
-		 (m.size() == MAX_EXTENTS && extents_exist));
+    ASSERT_GT(last->first + last->second, SKIP_STEP * (MAX_EXTENTS - 1));
+  }
+  {
+    // fiemap test from SKIP_STEP to SKIP_STEP * (MAX_EXTENTS - 2) + 3
+    bufferlist bl;
+    store->fiemap(cid, oid, SKIP_STEP, SKIP_STEP * (MAX_EXTENTS - 2) + 3, bl);
+    map<uint64_t,uint64_t> m, e;
+    auto p = bl.begin();
+    ::decode(m, p);
+    cout << " got " << m << std::endl;
+    ASSERT_TRUE(!m.empty());
+    // kstore always returns [0, object_size] regardless of offset and length
+    // FIXME: if fiemap logic in kstore is refined
+    if (string(GetParam()) != "kstore") {
+      ASSERT_GE(m[SKIP_STEP], 3u);
+      auto last = m.crbegin();
+      if (m.size() == 1) {
+        ASSERT_EQ(SKIP_STEP, last->first);
+      } else if (m.size() == MAX_EXTENTS - 2) {
+        for (uint64_t i = 1; i < MAX_EXTENTS - 1; i++) {
+	  ASSERT_TRUE(m.count(SKIP_STEP*i));
+	}
+      }
+      ASSERT_GT(last->first + last->second, SKIP_STEP * (MAX_EXTENTS - 1));
+    }
   }
   {
     ObjectStore::Transaction t;
@@ -3656,8 +3682,7 @@ INSTANTIATE_TEST_CASE_P(
   ::testing::Values(
     "memstore",
     "filestore",
-    "bluestore",
-    "kstore"));
+    "bluestore"));
 
 #else
 

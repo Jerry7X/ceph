@@ -294,6 +294,7 @@ public:
 protected:
   virtual void add_write_ops(librados::ObjectWriteOperation *wr) {
     if (has_parent()) {
+      wr->create(false);
       wr->truncate(0);
     } else {
       wr->remove();
@@ -302,7 +303,7 @@ protected:
 
   virtual const char* get_write_type() const {
     if (has_parent()) {
-      return "remove (trunc)";
+      return "remove (create+trunc)";
     }
     return "remove";
   }
@@ -331,11 +332,14 @@ private:
 
 class AioObjectTrim : public AbstractAioObjectWrite {
 public:
+  // we'd need to only conditionally specify if a post object map
+  // update is needed. pre update is decided as usual (by checking
+  // the state of the object in the map).
   AioObjectTrim(ImageCtx *ictx, const std::string &oid, uint64_t object_no,
-                const ::SnapContext &snapc, Context *completion)
+                const ::SnapContext &snapc, Context *completion,
+                bool post_object_map_update)
     : AbstractAioObjectWrite(ictx, oid, object_no, 0, 0, snapc, completion,
-                             true) {
-  }
+                             true), m_post_object_map_update(post_object_map_update) { }
 
 protected:
   virtual void add_write_ops(librados::ObjectWriteOperation *wr) {
@@ -351,8 +355,11 @@ protected:
   }
 
   virtual bool post_object_map_update() {
-    return true;
+    return m_post_object_map_update;
   }
+
+private:
+  bool m_post_object_map_update;
 };
 
 class AioObjectTruncate : public AbstractAioObjectWrite {

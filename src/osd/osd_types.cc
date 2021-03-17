@@ -1317,7 +1317,10 @@ void pg_pool_t::remove_unmanaged_snap(snapid_t s)
   assert(is_unmanaged_snaps_mode());
   removed_snaps.insert(s);
   snap_seq = snap_seq + 1;
-  removed_snaps.insert(get_snap_seq());
+  // try to add in the new seq, just to try to keep the interval_set contiguous
+  if (!removed_snaps.contains(get_snap_seq())) {
+    removed_snaps.insert(get_snap_seq());
+  }
 }
 
 SnapContext pg_pool_t::get_snap_context() const
@@ -1506,6 +1509,12 @@ void pg_pool_t::encode(bufferlist& bl, uint64_t features) const
     // this was the first post-hammer thing we added; if it's missing, encode
     // like hammer.
     v = 21;
+    if (!(features & CEPH_FEATURE_OSD_HITSET_GMT)) {
+      // CEPH_FEATURE_OSD_HITSET_GMT requires pg_pool_t v21 which has
+      // use_gmt_hitset, and two fields added before v21.
+      // See http://tracker.ceph.com/issues/19508
+      v = 17;
+    }
   }
 
   ENCODE_START(v, 5, bl);

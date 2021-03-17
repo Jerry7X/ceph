@@ -37,6 +37,7 @@
 #include "rgw_data_sync.h"
 #include "rgw_rest_conn.h"
 #include "rgw_realm_watcher.h"
+#include "rgw_http_client_curl.h"
 
 using namespace std;
 
@@ -167,6 +168,8 @@ void _usage()
   cout << "  replicalog delete          delete replica metadata log entry\n";
   cout << "  orphans find               init and run search for leaked rados objects (use job-id, pool)\n";
   cout << "  orphans finish             clean up search for leaked rados objects\n";
+  cout << "  sync error list            list sync error\n";
+  cout << "  sync error trim            trim sync error\n";
   cout << "options:\n";
   cout << "   --tenant=<tenant>         tenant name\n";
   cout << "   --uid=<id>                user id\n";
@@ -239,6 +242,7 @@ void _usage()
   cout << "                             (NOTE: required to delete a non-empty bucket)\n";
   cout << "   --sync-stats              option to 'user stats', update user stats with current\n";
   cout << "                             stats reported by user's buckets indexes\n";
+  cout << "   --reset-stats             option to 'user stats', reset stats in accordance with user buckets\n";
   cout << "   --show-log-entries=<flag> enable/disable dump of log entries on log show\n";
   cout << "   --show-log-sum=<flag>     enable/disable dump of log summation on log show\n";
   cout << "   --skip-zero-entries       log show only dumps entries that don't have zero value\n";
@@ -296,7 +300,7 @@ enum {
   OPT_KEY_CREATE,
   OPT_KEY_RM,
   OPT_BUCKETS_LIST,
-  OPT_BUCKETS_LIMIT_CHECK,
+  OPT_BUCKET_LIMIT_CHECK,
   OPT_BUCKET_LINK,
   OPT_BUCKET_UNLINK,
   OPT_BUCKET_STATS,
@@ -371,10 +375,12 @@ enum {
   OPT_METADATA_SYNC_INIT,
   OPT_METADATA_SYNC_RUN,
   OPT_MDLOG_LIST,
+  OPT_MDLOG_AUTOTRIM,
   OPT_MDLOG_TRIM,
   OPT_MDLOG_FETCH,
   OPT_MDLOG_STATUS,
   OPT_SYNC_ERROR_LIST,
+  OPT_SYNC_ERROR_TRIM,
   OPT_BILOG_LIST,
   OPT_BILOG_TRIM,
   OPT_BILOG_STATUS,
@@ -492,10 +498,6 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
   } else if (strcmp(prev_cmd, "buckets") == 0) {
     if (strcmp(cmd, "list") == 0)
       return OPT_BUCKETS_LIST;
-    if (strcmp(cmd, "limit") == 0) {
-      *need_more = true;
-      return 0;
-    }
   } else if (strcmp(prev_cmd, "bucket") == 0) {
     if (strcmp(cmd, "list") == 0)
       return OPT_BUCKETS_LIST;
@@ -517,6 +519,10 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
       *need_more = true;
       return 0;
     }
+    if (strcmp(cmd, "limit") == 0) {
+      *need_more = true;
+      return 0;
+    }
   } else if (prev_prev_cmd && strcmp(prev_prev_cmd, "bucket") == 0) {
     if (strcmp(prev_cmd, "sync") == 0) {
       if (strcmp(cmd, "status") == 0)
@@ -527,7 +533,7 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
 	return OPT_BUCKET_SYNC_RUN;
     } else if ((strcmp(prev_cmd, "limit") == 0) &&
 	       (strcmp(cmd, "check") == 0)) {
-      return OPT_BUCKETS_LIMIT_CHECK;
+      return OPT_BUCKET_LIMIT_CHECK;
     }
   } else if (strcmp(prev_cmd, "log") == 0) {
     if (strcmp(cmd, "list") == 0)
@@ -730,9 +736,13 @@ static int get_cmd(const char *cmd, const char *prev_cmd, const char *prev_prev_
 	     (strcmp(prev_cmd, "error") == 0)) {
     if (strcmp(cmd, "list") == 0)
       return OPT_SYNC_ERROR_LIST;
+    if (strcmp(cmd, "trim") == 0)
+      return OPT_SYNC_ERROR_TRIM; 
   } else if (strcmp(prev_cmd, "mdlog") == 0) {
     if (strcmp(cmd, "list") == 0)
       return OPT_MDLOG_LIST;
+    if (strcmp(cmd, "autotrim") == 0)
+      return OPT_MDLOG_AUTOTRIM;
     if (strcmp(cmd, "trim") == 0)
       return OPT_MDLOG_TRIM;
     if (strcmp(cmd, "fetch") == 0)
@@ -1058,7 +1068,7 @@ static bool dump_string(const char *field_name, bufferlist& bl, Formatter *f)
 {
   string val;
   if (bl.length() > 0) {
-    val.assign(bl.c_str(), bl.length());
+    val.assign(bl.c_str());
   }
   f->dump_string(field_name, val);
 
@@ -1439,7 +1449,8 @@ static int send_to_remote_or_url(const string& remote, const string& url,
 
 static int commit_period(RGWRealm& realm, RGWPeriod& period,
                          string remote, const string& url,
-                         const string& access, const string& secret)
+                         const string& access, const string& secret,
+                         bool force)
 {
   const string& master_zone = period.get_master_zone();
   if (master_zone.empty()) {
@@ -1457,7 +1468,7 @@ static int commit_period(RGWRealm& realm, RGWPeriod& period,
       return ret;
     }
     // the master zone can commit locally
-    ret = period.commit(realm, current_period, cerr);
+    ret = period.commit(realm, current_period, cerr, force);
     if (ret < 0) {
       cerr << "failed to commit period: " << cpp_strerror(-ret) << std::endl;
     }
@@ -1534,7 +1545,7 @@ static int update_period(const string& realm_id, const string& realm_name,
                          const string& period_id, const string& period_epoch,
                          bool commit, const string& remote, const string& url,
                          const string& access, const string& secret,
-                         Formatter *formatter)
+                         Formatter *formatter, bool force)
 {
   RGWRealm realm(realm_id, realm_name);
   int ret = realm.init(g_ceph_context, store);
@@ -1565,7 +1576,7 @@ static int update_period(const string& realm_id, const string& realm_name,
     return ret;
   }
   if (commit) {
-    ret = commit_period(realm, period, remote, url, access, secret);
+    ret = commit_period(realm, period, remote, url, access, secret, force);
     if (ret < 0) {
       cerr << "failed to commit period: " << cpp_strerror(-ret) << std::endl;
       return ret;
@@ -1639,7 +1650,8 @@ static int do_period_pull(const string& remote, const string& url, const string&
   if (ret < 0) {
     cerr << "Error storing period " << period->get_id() << ": " << cpp_strerror(ret) << std::endl;
   }
-
+  // store latest epoch (ignore errors)
+  period->update_latest_epoch(period->get_epoch());
   return 0;
 }
 
@@ -1684,13 +1696,12 @@ static void get_md_sync_status(list<string>& status)
     return;
   }
 
-  ret = sync.read_sync_status();
+  rgw_meta_sync_status sync_status;
+  ret = sync.read_sync_status(&sync_status);
   if (ret < 0) {
     status.push_back(string("failed to read sync status: ") + cpp_strerror(-ret));
     return;
   }
-
-  const rgw_meta_sync_status& sync_status = sync.get_sync_status();
 
   string status_str;
   switch (sync_status.sync_info.state) {
@@ -2276,6 +2287,7 @@ int main(int argc, char **argv)
   int include_all = false;
 
   int sync_stats = false;
+  int reset_stats = false;
   int bypass_gc = false;
   int warnings_only = false;
   int inconsistent_index = false;
@@ -2498,6 +2510,8 @@ int main(int argc, char **argv)
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &sync_stats, NULL, "--sync-stats", (char*)NULL)) {
      // do nothing
+    } else if (ceph_argparse_binary_flag(args, i, &reset_stats, NULL, "--reset-stats", (char*)NULL)) {
+      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &include_all, NULL, "--include-all", (char*)NULL)) {
      // do nothing
     } else if (ceph_argparse_binary_flag(args, i, &extra_info, NULL, "--extra-info", (char*)NULL)) {
@@ -2741,6 +2755,15 @@ int main(int argc, char **argv)
   rgw_user_init(store);
   rgw_bucket_init(store->meta_mgr);
 
+  struct rgw_curl_setup {
+    rgw_curl_setup() {
+      rgw::curl::setup_curl(boost::none);
+    }
+    ~rgw_curl_setup() {
+      rgw::curl::cleanup_curl();
+    }
+  } curl_cleanup;
+
   StoreDestructor store_destructor(store);
 
   if (raw_storage_op) {
@@ -2825,7 +2848,7 @@ int main(int argc, char **argv)
       {
         int ret = update_period(realm_id, realm_name, period_id, period_epoch,
                                 commit, remote, url, access_key, secret_key,
-                                formatter);
+                                formatter, yes_i_really_mean_it);
 	if (ret < 0) {
 	  return ret;
 	}
@@ -2993,6 +3016,9 @@ int main(int argc, char **argv)
 	  cerr << "realm.rename failed: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
+        cout << "Realm name updated. Note that this change only applies to "
+            "the current cluster, so this command must be run separately "
+            "on each of the realm's other clusters." << std::endl;
       }
       break;
     case OPT_REALM_SET:
@@ -4260,7 +4286,7 @@ int main(int argc, char **argv)
     {
       int ret = update_period(realm_id, realm_name, period_id, period_epoch,
                               commit, remote, url, access_key, secret_key,
-                              formatter);
+                              formatter, yes_i_really_mean_it);
       if (ret < 0) {
 	return ret;
       }
@@ -4281,7 +4307,8 @@ int main(int argc, char **argv)
         cerr << "period init failed: " << cpp_strerror(-ret) << std::endl;
         return ret;
       }
-      ret = commit_period(realm, period, remote, url, access_key, secret_key);
+      ret = commit_period(realm, period, remote, url, access_key, secret_key,
+                          yes_i_really_mean_it);
       if (ret < 0) {
         cerr << "failed to commit period: " << cpp_strerror(-ret) << std::endl;
         return ret;
@@ -4323,7 +4350,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if (opt_cmd == OPT_BUCKETS_LIMIT_CHECK) {
+  if (opt_cmd == OPT_BUCKET_LIMIT_CHECK) {
     void *handle;
     std::list<std::string> user_ids;
     metadata_key = "user";
@@ -4366,7 +4393,7 @@ int main(int argc, char **argv)
       store->meta_mgr->list_keys_complete(handle);
     }
     return -ret;
-  } /* OPT_BUCKETS_LIMIT_CHECK */
+  } /* OPT_BUCKET_LIMIT_CHECK */
 
   if (opt_cmd == OPT_BUCKETS_LIST) {
     if (bucket_name.empty()) {
@@ -5116,7 +5143,7 @@ next:
     int num_target_shards = (new_bucket_info.num_shards > 0 ? new_bucket_info.num_shards : 1);
 
     BucketReshardManager target_shards_mgr(store, new_bucket_info, num_target_shards);
-    
+
     if (verbose) {
       formatter->open_array_section("entries");
     }
@@ -5194,14 +5221,12 @@ next:
       return EIO;
     }
 
-    bucket_op.set_bucket_id(new_bucket_info.bucket.bucket_id);
-    bucket_op.set_user_id(new_bucket_info.owner);
-    string err;
-    int r = RGWBucketAdminOp::link(store, bucket_op, &err);
-    if (r < 0) {
-      cerr << "failed to link new bucket instance (bucket_id=" << new_bucket_info.bucket.bucket_id << ": " << err << "; " << cpp_strerror(-r) << std::endl;
-      return -r;
-    }
+    ret = rgw_link_bucket(store, new_bucket_info.owner, new_bucket_info.bucket, bucket_info.creation_time);
+    if (ret < 0) {
+      lderr(store->ctx()) << "failed to link new bucket instance (bucket_id=" << new_bucket_info.bucket.bucket_id << ": "
+			  << cpp_strerror(-ret) << ")" << dendl;
+      return -ret;
+   }
   }
 
   if (opt_cmd == OPT_OBJECT_UNLINK) {
@@ -5395,6 +5420,24 @@ next:
   }
 
   if (opt_cmd == OPT_USER_STATS) {
+    if (user_id.empty()) {
+      cerr << "ERROR: uid not specified" << std::endl;
+      return EINVAL;
+    }
+
+    string user_str = user_id.to_str();
+    if (reset_stats) {
+      if (!bucket_name.empty()){
+	cerr << "ERROR: recalculate doesn't work on buckets" << std::endl;
+	return EINVAL;
+      }
+      ret = store->cls_user_reset_stats(user_str);
+      if (ret < 0) {
+	cerr << "ERROR: could not clear user stats: " << cpp_strerror(-ret) << std::endl;
+	return -ret;
+      }
+    }
+
     if (sync_stats) {
       if (!bucket_name.empty()) {
         int ret = rgw_bucket_sync_user_stats(store, tenant, bucket_name);
@@ -5416,7 +5459,6 @@ next:
       return EINVAL;
     }
     cls_user_header header;
-    string user_str = user_id.to_str();
     int ret = store->cls_user_get_header(user_str, &header);
     if (ret < 0) {
       cerr << "ERROR: can't read user header: " << cpp_strerror(-ret) << std::endl;
@@ -5578,6 +5620,26 @@ next:
     formatter->flush(cout);
   }
 
+  if (opt_cmd == OPT_MDLOG_AUTOTRIM) {
+    // need a full history for purging old mdlog periods
+    store->meta_mgr->init_oldest_log_period();
+
+    RGWCoroutinesManager crs(store->ctx(), store->get_cr_registry());
+    RGWHTTPManager http(store->ctx(), crs.get_completion_mgr());
+    int ret = http.set_threaded();
+    if (ret < 0) {
+      cerr << "failed to initialize http client with " << cpp_strerror(ret) << std::endl;
+      return -ret;
+    }
+
+    auto num_shards = g_conf->rgw_md_log_max_shards;
+    ret = crs.run(create_admin_meta_log_trim_cr(store, &http, num_shards));
+    if (ret < 0) {
+      cerr << "automated mdlog trim failed with " << cpp_strerror(ret) << std::endl;
+      return -ret;
+    }
+  }
+
   if (opt_cmd == OPT_MDLOG_TRIM) {
     utime_t start_time, end_time;
 
@@ -5620,13 +5682,12 @@ next:
       return -ret;
     }
 
-    ret = sync.read_sync_status();
+    rgw_meta_sync_status sync_status;
+    ret = sync.read_sync_status(&sync_status);
     if (ret < 0) {
       cerr << "ERROR: sync.read_sync_status() returned ret=" << ret << std::endl;
       return -ret;
     }
-
-    const rgw_meta_sync_status& sync_status = sync.get_sync_status();
 
     formatter->open_object_section("summary");
     encode_json("sync_status", sync_status, formatter);
@@ -5663,7 +5724,7 @@ next:
     }
     ret = sync.init_sync_status();
     if (ret < 0) {
-      cerr << "ERROR: sync.get_sync_status() returned ret=" << ret << std::endl;
+      cerr << "ERROR: sync.init_sync_status() returned ret=" << ret << std::endl;
       return -ret;
     }
   }
@@ -5744,7 +5805,7 @@ next:
 
     ret = sync.init_sync_status();
     if (ret < 0) {
-      cerr << "ERROR: sync.get_sync_status() returned ret=" << ret << std::endl;
+      cerr << "ERROR: sync.init_sync_status() returned ret=" << ret << std::endl;
       return -ret;
     }
   }
@@ -5792,7 +5853,7 @@ next:
     }
     ret = sync.init_sync_status();
     if (ret < 0) {
-      cerr << "ERROR: sync.get_sync_status() returned ret=" << ret << std::endl;
+      cerr << "ERROR: sync.init_sync_status() returned ret=" << ret << std::endl;
       return -ret;
     }
   }
@@ -5976,6 +6037,33 @@ next:
     formatter->flush(cout);
   }
 
+  if (opt_cmd == OPT_SYNC_ERROR_TRIM) {
+    utime_t start_time, end_time;
+    int ret = parse_date_str(start_date, start_time);
+    if (ret < 0)
+      return -ret;
+
+    ret = parse_date_str(end_date, end_time);
+    if (ret < 0)
+      return -ret;
+
+    if (shard_id < 0) {
+      shard_id = 0;
+    }
+
+    for (; shard_id < ERROR_LOGGER_SHARDS; ++shard_id) {
+      string oid = RGWSyncErrorLogger::get_shard_oid(RGW_SYNC_ERROR_LOG_SHARD_PREFIX, shard_id);
+      ret = store->time_log_trim(oid, start_time.to_real_time(), end_time.to_real_time(), start_marker, end_marker);
+      if (ret < 0 && ret != -ENODATA) {
+        cerr << "ERROR: sync error trim: " << cpp_strerror(-ret) << std::endl;
+        return -ret;
+      }
+      if (specified_shard_id) {
+        break;
+      }
+    }
+  }
+
   if (opt_cmd == OPT_BILOG_TRIM) {
     if (bucket_name.empty()) {
       cerr << "ERROR: bucket not specified" << std::endl;
@@ -6008,7 +6096,7 @@ next:
     map<int, string> markers;
     ret = store->get_bi_log_status(bucket, shard_id, markers);
     if (ret < 0) {
-      cerr << "ERROR: trim_bi_log_entries(): " << cpp_strerror(-ret) << std::endl;
+      cerr << "ERROR: get_bi_log_status(): " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
     formatter->open_object_section("entries");

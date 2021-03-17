@@ -274,7 +274,8 @@ public:
   int init(RGWRados *storage, RGWBucketAdminOpState& op_state);
 
   int check_bad_index_multipart(RGWBucketAdminOpState& op_state,
-          list<rgw_obj_key>& objs_to_unlink, std::string *err_msg = NULL);
+				RGWFormatterFlusher& flusher,
+				std::string *err_msg = NULL);
 
   int check_object_index(RGWBucketAdminOpState& op_state,
           map<string, RGWObjEnt> result, std::string *err_msg = NULL);
@@ -470,6 +471,7 @@ public:
   ~RGWDataChangesLog();
 
   int choose_oid(const rgw_bucket_shard& bs);
+  const std::string& get_oid(int shard_id) const { return oids[shard_id]; }
   int add_entry(rgw_bucket& bucket, int shard_id);
   int get_log_shard_id(rgw_bucket& bucket, int shard_id);
   int renew_entries();

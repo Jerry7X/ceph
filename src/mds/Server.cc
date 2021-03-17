@@ -58,7 +58,6 @@
 #include "osd/OSDMap.h"
 
 #include <errno.h>
-#include <fcntl.h>
 
 #include <list>
 #include <iostream>
@@ -128,7 +127,7 @@ void Server::dispatch(Message *m)
     if (m->get_type() == CEPH_MSG_CLIENT_REQUEST &&
 	(mds->is_reconnect() || mds->get_want_state() == CEPH_MDS_STATE_RECONNECT)) {
       MClientRequest *req = static_cast<MClientRequest*>(m);
-      Session *session = get_session(req);
+      Session *session = mds->get_session(req);
       if (!session || session->is_closed()) {
 	dout(5) << "session is closed, dropping " << req->get_reqid() << dendl;
 	req->put();
@@ -171,7 +170,7 @@ void Server::dispatch(Message *m)
 	if (req->is_replay()) {
 	  wait_for_active = false;
 	} else {
-	  Session *session = get_session(req);
+	  Session *session = mds->get_session(req);
 	  if (session && session->have_completed_request(req->get_reqid().tid, NULL))
 	    wait_for_active = false;
 	}
@@ -227,24 +226,11 @@ public:
   }
 };
 
-Session *Server::get_session(Message *m)
-{
-  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
-  if (session) {
-    dout(20) << "get_session have " << session << " " << session->info.inst
-	     << " state " << session->get_state_name() << dendl;
-    session->put();  // not carry ref
-  } else {
-    dout(20) << "get_session dne for " << m->get_source_inst() << dendl;
-  }
-  return session;
-}
-
 /* This function DOES put the passed message before returning*/
 void Server::handle_client_session(MClientSession *m)
 {
   version_t pv;
-  Session *session = get_session(m);
+  Session *session = mds->get_session(m);
 
   dout(3) << "handle_client_session " << *m << " from " << m->get_source() << dendl;
   assert(m->get_source().is_client()); // should _not_ come from an mds!
@@ -461,7 +447,8 @@ void Server::_session_logged(Session *session, uint64_t state_seq, bool open, ve
     } else if (session->is_killing()) {
       // destroy session, close connection
       if (session->connection != NULL) {
-        session->connection->mark_down();
+	session->connection->mark_down();
+	session->connection->set_priv(NULL);
       }
       mds->sessionmap.remove_session(session);
     } else {
@@ -727,7 +714,7 @@ void Server::handle_client_reconnect(MClientReconnect *m)
 {
   dout(7) << "handle_client_reconnect " << m->get_source() << dendl;
   client_t from = m->get_source().num();
-  Session *session = get_session(m);
+  Session *session = mds->get_session(m);
   assert(session);
 
   if (!mds->is_reconnect() && mds->get_want_state() == CEPH_MDS_STATE_RECONNECT) {
@@ -741,7 +728,7 @@ void Server::handle_client_reconnect(MClientReconnect *m)
   dout(10) << " reconnect_start " << reconnect_start << " delay " << delay << dendl;
 
   bool deny = false;
-  if (!mds->is_reconnect()) {
+  if (!mds->is_reconnect() || mds->get_want_state() != CEPH_MDS_STATE_RECONNECT) {
     // XXX maybe in the future we can do better than this?
     dout(1) << " no longer in reconnect state, ignoring reconnect, sending close" << dendl;
     mds->clog->info() << "denied reconnect attempt (mds is "
@@ -1336,7 +1323,7 @@ void Server::handle_client_request(MClientRequest *req)
   // active session?
   Session *session = 0;
   if (req->get_source().is_client()) {
-    session = get_session(req);
+    session = mds->get_session(req);
     if (!session) {
       dout(5) << "no session for " << req->get_source() << ", dropping" << dendl;
       req->put();
@@ -2888,7 +2875,8 @@ void Server::handle_client_open(MDRequestRef& mdr)
   int flags = req->head.args.open.flags;
   int cmode = ceph_flags_to_mode(flags);
 
-  bool need_auth = !file_mode_is_readonly(cmode) || (flags & O_TRUNC);
+  bool need_auth = !file_mode_is_readonly(cmode) ||
+		   (flags & (CEPH_O_TRUNC | CEPH_O_DIRECTORY));
 
   dout(7) << "open on " << req->get_filepath() << dendl;
 
@@ -2924,8 +2912,8 @@ void Server::handle_client_open(MDRequestRef& mdr)
     // can only open non-regular inode with mode FILE_MODE_PIN, at least for now.
     cmode = CEPH_FILE_MODE_PIN;
     // the inode is symlink and client wants to follow it, ignore the O_TRUNC flag.
-    if (cur->inode.is_symlink() && !(flags & O_NOFOLLOW))
-      flags &= ~O_TRUNC;
+    if (cur->inode.is_symlink() && !(flags & CEPH_O_NOFOLLOW))
+      flags &= ~CEPH_O_TRUNC;
   }
 
   dout(10) << "open flags = " << flags
@@ -2939,13 +2927,13 @@ void Server::handle_client_open(MDRequestRef& mdr)
     respond_to_request(mdr, -ENXIO);                 // FIXME what error do we want?
     return;
     }*/
-  if ((flags & O_DIRECTORY) && !cur->inode.is_dir() && !cur->inode.is_symlink()) {
+  if ((flags & CEPH_O_DIRECTORY) && !cur->inode.is_dir() && !cur->inode.is_symlink()) {
     dout(7) << "specified O_DIRECTORY on non-directory " << *cur << dendl;
     respond_to_request(mdr, -EINVAL);
     return;
   }
 
-  if ((flags & O_TRUNC) && !cur->inode.is_file()) {
+  if ((flags & CEPH_O_TRUNC) && !cur->inode.is_file()) {
     dout(7) << "specified O_TRUNC on !(file|symlink) " << *cur << dendl;
     // we should return -EISDIR for directory, return -EINVAL for other non-regular
     respond_to_request(mdr, cur->inode.is_dir() ? -EISDIR : -EINVAL);
@@ -2983,7 +2971,7 @@ void Server::handle_client_open(MDRequestRef& mdr)
   }
 
   // O_TRUNC
-  if ((flags & O_TRUNC) && !mdr->has_completed) {
+  if ((flags & CEPH_O_TRUNC) && !mdr->has_completed) {
     assert(cur->is_auth());
 
     xlocks.insert(&cur->filelock);
@@ -3123,7 +3111,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
     return;
   }
 
-  if (!(req->head.args.open.flags & O_EXCL)) {
+  if (!(req->head.args.open.flags & CEPH_O_EXCL)) {
     int r = mdcache->path_traverse(mdr, NULL, NULL, req->get_filepath(),
 				   &mdr->dn[0], NULL, MDS_TRAVERSE_FORWARD);
     if (r > 0) return;
@@ -3146,7 +3134,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
     // r == -ENOENT
   }
 
-  bool excl = (req->head.args.open.flags & O_EXCL);
+  bool excl = (req->head.args.open.flags & CEPH_O_EXCL);
   set<SimpleLock*> rdlocks, wrlocks, xlocks;
   file_layout_t *dir_layout = NULL;
   CDentry *dn = rdlock_path_xlock_dentry(mdr, 0, rdlocks, wrlocks, xlocks,
@@ -3221,7 +3209,7 @@ void Server::handle_client_openc(MDRequestRef& mdr)
 
   if (!dnl->is_null()) {
     // it existed.  
-    assert(req->head.args.open.flags & O_EXCL);
+    assert(req->head.args.open.flags & CEPH_O_EXCL);
     dout(10) << "O_EXCL, target exists, failing with -EEXIST" << dendl;
     mdr->tracei = dnl->get_inode();
     mdr->tracedn = dn;
@@ -4695,9 +4683,6 @@ void Server::handle_client_mknod(MDRequestRef& mdr)
       newi->filelock.set_state(LOCK_EXCL);
       newi->authlock.set_state(LOCK_EXCL);
       newi->xattrlock.set_state(LOCK_EXCL);
-      cap->issue_norevoke(CEPH_CAP_AUTH_EXCL|CEPH_CAP_AUTH_SHARED|
-			  CEPH_CAP_XATTR_EXCL|CEPH_CAP_XATTR_SHARED|
-			  CEPH_CAP_ANY_FILE_WR);
     }
   }
 
@@ -4793,8 +4778,6 @@ void Server::handle_client_mkdir(MDRequestRef& mdr)
     newi->filelock.set_state(LOCK_EXCL);
     newi->authlock.set_state(LOCK_EXCL);
     newi->xattrlock.set_state(LOCK_EXCL);
-    cap->issue_norevoke(CEPH_CAP_AUTH_EXCL|CEPH_CAP_AUTH_SHARED|
-			CEPH_CAP_XATTR_EXCL|CEPH_CAP_XATTR_SHARED);
   }
 
   // make sure this inode gets into the journal
@@ -4887,9 +4870,15 @@ void Server::handle_client_link(MDRequestRef& mdr)
   dout(7) << "handle_client_link link " << dn->get_name() << " in " << *dir << dendl;
   dout(7) << "target is " << *targeti << dendl;
   if (targeti->is_dir()) {
-    dout(7) << "target is a dir, failing..." << dendl;
-    respond_to_request(mdr, -EINVAL);
-    return;
+    // if srcdn is replica, need to make sure its linkage is correct
+    vector<CDentry*>& trace = mdr->dn[1];
+    if (trace.empty() ||
+	trace.back()->is_auth() ||
+	trace.back()->lock.can_read(mdr->get_client())) {
+      dout(7) << "target is a dir, failing..." << dendl;
+      respond_to_request(mdr, -EINVAL);
+      return;
+    }
   }
 
   xlocks.insert(&targeti->linklock);
@@ -5594,7 +5583,7 @@ void Server::_unlink_local(MDRequestRef& mdr, CDentry *dn, CDentry *straydn)
   dn->pre_dirty();
 
   inode_t *pi = in->project_inode();
-  dn->make_path_string(pi->stray_prior_path);
+  dn->make_path_string(pi->stray_prior_path, true);
   mdr->add_projected_inode(in); // do this _after_ my dn->pre_dirty().. we apply that one manually.
   pi->version = in->pre_dirty();
   pi->ctime = mdr->get_op_stamp();
@@ -6151,25 +6140,30 @@ void Server::handle_client_rename(MDRequestRef& mdr)
     oldin = mdcache->get_dentry_inode(destdn, mdr, true);
     if (!oldin) return;
     dout(10) << " oldin " << *oldin << dendl;
-    
-    // mv /some/thing /to/some/existing_other_thing
-    if (oldin->is_dir() && !srci->is_dir()) {
-      respond_to_request(mdr, -EISDIR);
-      return;
-    }
-    if (!oldin->is_dir() && srci->is_dir()) {
-      respond_to_request(mdr, -ENOTDIR);
-      return;
-    }
 
     // non-empty dir?
     if (oldin->is_dir() && _dir_is_nonempty_unlocked(mdr, oldin)) {
       respond_to_request(mdr, -ENOTEMPTY);
       return;
     }
-    if (srci == oldin && !srcdn->get_dir()->inode->is_stray()) {
-      respond_to_request(mdr, 0);  // no-op.  POSIX makes no sense.
-      return;
+
+    // if srcdn is replica, need to make sure its linkage is correct
+    if (srcdn->is_auth() ||
+	srcdn->lock.can_read(mdr->get_client()) ||
+	(srcdn->lock.is_xlocked() && srcdn->lock.get_xlock_by() == mdr)) {
+      // mv /some/thing /to/some/existing_other_thing
+      if (oldin->is_dir() && !srci->is_dir()) {
+	respond_to_request(mdr, -EISDIR);
+	return;
+      }
+      if (!oldin->is_dir() && srci->is_dir()) {
+	respond_to_request(mdr, -ENOTDIR);
+	return;
+      }
+      if (srci == oldin && !srcdn->get_dir()->inode->is_stray()) {
+	respond_to_request(mdr, 0);  // no-op.  POSIX makes no sense.
+	return;
+      }
     }
   }
 
@@ -6784,7 +6778,7 @@ void Server::_rename_prepare(MDRequestRef& mdr,
     }
     if (tpi) {
       tpi->ctime = mdr->get_op_stamp();
-      destdn->make_path_string(tpi->stray_prior_path);
+      destdn->make_path_string(tpi->stray_prior_path, true);
       tpi->nlink--;
       if (tpi->nlink == 0)
 	oldin->state_set(CInode::STATE_ORPHAN);

@@ -2844,6 +2844,62 @@ void PG::upgrade(ObjectStore *store)
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic warning "-Wpragmas"
 
+static void _simplify_past_intervals(map<epoch_t,pg_interval_t> &pi)
+{
+  generic_dout(0) << __func__ << " on " << pi.size() << " intervals" << dendl;
+  unsigned was = pi.size();
+  if (pi.size() <= 2)
+    return;
+
+  // go backwards.  this is because, although usually we only care about
+  // up/acting, in the prior set we also look at first when doing the lost_at
+  // comparison.  we want to always keep the *most recent* interval when
+  // dropping redundant intervals so that we don't break the comparison
+  //       } else if (pinfo->lost_at > interval.first) {
+  //
+  // also note:
+  //   we will never have last_epoch_clean pointing to an interval
+  // that has maybe_went_rw=false, since it only advances during an
+  // active, healthy interval.  thus, no changes needed to prune (we won't
+  // prune *into* an interval that no longer exists).
+  auto p = pi.end();
+  --p;
+  generic_dout(0) << __func__ << " keep tail " << *p << dendl;
+  --p;
+  auto last = pi.begin();
+  generic_dout(0) << __func__ << " keep head " << *last << dendl;
+  set<string> seen;
+  while (p != last) {
+    epoch_t start = p->first;
+    if (!p->second.maybe_went_rw) {
+      generic_dout(0) << __func__ << " dropping maybe_went_rw=0 interval "
+		      << *p << dendl;
+      --p;
+      pi.erase(start);
+      continue;
+    }
+    ostringstream ss;
+    ss << p->second.up << " " << p->second.acting << " " << p->second.primary
+       << " " << p->second.up_primary;
+    string s = ss.str();
+    if (seen.count(s)) {
+      generic_dout(0) << __func__ << " dropping dup interval " << *p << dendl;
+      --p;
+      pi.erase(start);
+      continue;
+    }
+    seen.insert(s);
+    // keep it
+    generic_dout(0) << __func__ << " keep " << *p << dendl;
+    --p;
+  }
+  if (pi.size() < was) {
+    generic_dout(0) << __func__ << " finish with " << pi.size()
+		    << " (from " << was << ")"
+		    << dendl;
+  }
+}
+
 int PG::_prepare_write_info(map<string,bufferlist> *km,
 			    epoch_t epoch,
 			    pg_info_t &info, coll_t coll,
@@ -3212,6 +3268,10 @@ void PG::read_state(ObjectStore *store, bufferlist &bl)
 		    info_struct_v);
   assert(r >= 0);
 
+  if (g_conf->osd_hack_prune_past_intervals) {
+    _simplify_past_intervals(past_intervals);
+  }
+
   ostringstream oss;
   pg_log.read_log(store,
 		  coll,
@@ -3455,13 +3515,14 @@ bool PG::sched_scrub()
   bool ret = true;
   if (!scrubber.reserved) {
     assert(scrubber.reserved_peers.empty());
-    if (osd->inc_scrubs_pending()) {
-      dout(20) << "sched_scrub: reserved locally, reserving replicas" << dendl;
+    if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
+         osd->inc_scrubs_pending()) {
+      dout(20) << __func__ << ": reserved locally, reserving replicas" << dendl;
       scrubber.reserved = true;
       scrubber.reserved_peers.insert(pg_whoami);
       scrub_reserve_replicas();
     } else {
-      dout(20) << "sched_scrub: failed to reserve locally" << dendl;
+      dout(20) << __func__ << ": failed to reserve locally" << dendl;
       ret = false;
     }
   }
@@ -3611,7 +3672,13 @@ void PG::sub_op_scrub_reserve(OpRequestRef op)
 
   op->mark_started();
 
-  scrubber.reserved = osd->inc_scrubs_pending();
+  if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
+      osd->inc_scrubs_pending()) {
+    scrubber.reserved = true;
+  } else {
+    dout(20) << __func__ << ": failed to reserve remotely" << dendl;
+    scrubber.reserved = false;
+  }
 
   MOSDSubOpReply *reply = new MOSDSubOpReply(
     m, pg_whoami, 0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
@@ -3848,14 +3915,75 @@ void PG::_scan_snaps(ScrubMap &smap)
 			    << "...repaired";
 	}
 	snap_mapper.add_oid(hoid, oi_snaps, &_t);
-	r = osd->store->apply_transaction(osr.get(), std::move(t));
-	if (r != 0) {
-	  derr << __func__ << ": apply_transaction got " << cpp_strerror(r)
-	       << dendl;
+
+	// wait for repair to apply to avoid confusing other bits of the system.
+	{
+	  Cond my_cond;
+	  Mutex my_lock("PG::_scan_snaps my_lock");
+	  int r = 0;
+	  bool done;
+	  t.register_on_applied_sync(
+	    new C_SafeCond(&my_lock, &my_cond, &done, &r));
+	  r = osd->store->queue_transaction(osr.get(), std::move(t), nullptr);
+	  if (r != 0) {
+	    derr << __func__ << ": queue_transaction got " << cpp_strerror(r)
+		 << dendl;
+	  } else {
+	    my_lock.Lock();
+	    while (!done)
+	      my_cond.Wait(my_lock);
+	    my_lock.Unlock();
+	  }
 	}
       }
     } else {
       o.nlinks = 1;
+    }
+  }
+}
+
+void PG::_repair_oinfo_oid(ScrubMap &smap)
+{
+  for (map<hobject_t, ScrubMap::object>::reverse_iterator i = smap.objects.rbegin();
+       i != smap.objects.rend();
+       ++i) {
+    const hobject_t &hoid = i->first;
+    ScrubMap::object &o = i->second;
+
+    bufferlist bl;
+    if (o.attrs.find(OI_ATTR) == o.attrs.end()) {
+      continue;
+    }
+    bl.push_back(o.attrs[OI_ATTR]);
+    object_info_t oi;
+    try {
+      oi.decode(bl);
+    } catch(...) {
+      continue;
+    }
+    if (oi.soid != hoid) {
+      ObjectStore::Transaction t;
+      OSDriver::OSTransaction _t(osdriver.get_transaction(&t));
+      osd->clog->error() << "osd." << osd->whoami
+			    << " found object info error on pg "
+			    << info.pgid
+			    << " oid " << hoid << " oid in object info: "
+			    << oi.soid
+			    << "...repaired";
+      // Fix object info
+      oi.soid = hoid;
+      bl.clear();
+      ::encode(oi, bl, get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+
+      bufferptr bp(bl.c_str(), bl.length());
+      o.attrs[OI_ATTR] = bp;
+
+      t.setattr(coll, ghobject_t(hoid), OI_ATTR, bl);
+      int r = osd->store->apply_transaction(osr.get(), std::move(t));
+      if (r != 0) {
+	derr << __func__ << ": apply_transaction got " << cpp_strerror(r)
+	     << dendl;
+      }
     }
   }
 }
@@ -3892,6 +4020,7 @@ int PG::build_scrub_map_chunk(
   get_pgbackend()->be_scan_list(map, ls, deep, seed, handle);
   _scan_rollback_obs(rollback_obs, handle);
   _scan_snaps(map);
+  _repair_oinfo_oid(map);
 
   dout(20) << __func__ << " done" << dendl;
   return 0;
@@ -4029,22 +4158,49 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
 {
   if (g_conf->osd_scrub_sleep > 0 &&
       (scrubber.state == PG::Scrubber::NEW_CHUNK ||
-       scrubber.state == PG::Scrubber::INACTIVE)) {
+       scrubber.state == PG::Scrubber::INACTIVE) &&
+       scrubber.needs_sleep) {
+    ceph_assert(!scrubber.sleeping);
     dout(20) << __func__ << " state is INACTIVE|NEW_CHUNK, sleeping" << dendl;
-    unlock();
-    utime_t t;
-    t.set_from_double(g_conf->osd_scrub_sleep);
-    handle.suspend_tp_timeout();
-    t.sleep();
-    handle.reset_tp_timeout();
-    lock();
-    dout(20) << __func__ << " slept for " << t << dendl;
+
+    // Do an async sleep so we don't block the op queue
+    OSDService *osds = osd;
+    spg_t pgid = get_pgid();
+    int state = scrubber.state;
+    auto scrub_requeue_callback =
+        new FunctionContext([osds, pgid, state](int r) {
+          PG *pg = osds->osd->lookup_lock_pg(pgid);
+          if (pg == nullptr) {
+            lgeneric_dout(osds->osd->cct, 20)
+                << "scrub_requeue_callback: Could not find "
+                << "PG " << pgid << " can't complete scrub requeue after sleep"
+                << dendl;
+            return;
+          }
+          pg->scrubber.sleeping = false;
+          pg->scrubber.needs_sleep = false;
+          lgeneric_dout(pg->cct, 20)
+              << "scrub_requeue_callback: slept for "
+              << ceph_clock_now(pg->cct) - pg->scrubber.sleep_start
+              << ", re-queuing scrub with state " << state << dendl;
+          pg->scrub_queued = false;
+          pg->requeue_scrub();
+          pg->scrubber.sleep_start = utime_t();
+          pg->unlock();
+        });
+    Mutex::Locker l(osd->scrub_sleep_lock);
+    osd->scrub_sleep_timer.add_event_after(cct->_conf->osd_scrub_sleep,
+                                           scrub_requeue_callback);
+    scrubber.sleeping = true;
+    scrubber.sleep_start = ceph_clock_now(cct);
+    return;
   }
   if (pg_has_reset_since(queued)) {
     return;
   }
   assert(scrub_queued);
   scrub_queued = false;
+  scrubber.needs_sleep = true;
 
   if (!is_primary() || !is_active() || !is_clean() || !is_scrubbing()) {
     dout(10) << "scrub -- not primary or active or not clean" << dendl;
@@ -5269,6 +5425,12 @@ void PG::proc_primary_info(ObjectStore::Transaction &t, const pg_info_t &oinfo)
   if (info.history.merge(oinfo.history))
     dirty_info = true;
   reg_next_scrub();
+  if (!info.stats.stats_invalid && info.stats.stats.sum.num_scrub_errors) {
+    info.stats.stats.sum.num_scrub_errors = 0;
+    info.stats.stats.sum.num_shallow_scrub_errors = 0;
+    info.stats.stats.sum.num_deep_scrub_errors = 0;
+    dirty_info = true;
+  }
 
   if (last_complete_ondisk.epoch >= info.history.last_epoch_started) {
     // DEBUG: verify that the snaps are empty in snap_mapper

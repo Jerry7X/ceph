@@ -124,11 +124,15 @@ static void get_index_ver_key(cls_method_context_t hctx, uint64_t index_ver, str
   *key = buf;
 }
 
-static void bi_log_index_key(cls_method_context_t hctx, string& key, string& id, uint64_t index_ver)
+static void bi_log_prefix(string& key)
 {
   key = BI_PREFIX_CHAR;
   key.append(bucket_index_prefixes[BI_BUCKET_LOG_INDEX]);
+}
 
+static void bi_log_index_key(cls_method_context_t hctx, string& key, string& id, uint64_t index_ver)
+{
+  bi_log_prefix(key);
   get_index_ver_key(hctx, index_ver, &id);
   key.append(id);
 }
@@ -469,8 +473,9 @@ int rgw_bucket_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
         CLS_LOG(20, "entry %s[%s] is not valid\n", key.name.c_str(), key.instance.c_str());
         continue;
       }
-
-      if (!op.list_versions && !entry.is_visible()) {
+      
+      // filter out noncurrent versions, delete markers, and initial marker
+      if (!op.list_versions && (!entry.is_visible() || op.start_obj.name == key.name)) {
         CLS_LOG(20, "entry %s[%s] is not visible\n", key.name.c_str(), key.instance.c_str());
         continue;
       }
@@ -1705,7 +1710,7 @@ static int rgw_bucket_unlink_instance(cls_method_context_t hctx, bufferlist *in,
     rgw_bucket_entry_ver ver;
     ver.epoch = (op.olh_epoch ? op.olh_epoch : olh.get_epoch());
 
-    real_time mtime = real_clock::now(); /* mtime has no real meaning in instance removal context */
+    real_time mtime = obj.mtime(); /* mtime has no real meaning in instance removal context */
     ret = log_index_operation(hctx, op.key, CLS_RGW_OP_UNLINK_INSTANCE, op.op_tag,
                               mtime, ver,
                               CLS_RGW_STATE_COMPLETE, header.ver, header.max_marker,
@@ -1900,7 +1905,9 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlis
     return rc;
   }
 
-  timespan tag_timeout(header.tag_timeout ? header.tag_timeout : CEPH_RGW_TAG_TIMEOUT);
+  timespan tag_timeout(
+    std::chrono::seconds(
+      header.tag_timeout ? header.tag_timeout : CEPH_RGW_TAG_TIMEOUT));
 
   bufferlist::iterator in_iter = in->begin();
 
@@ -1976,6 +1983,18 @@ int rgw_dir_suggest_changes(cls_method_context_t hctx, bufferlist *in, bufferlis
         }
         break;
       case CEPH_RGW_UPDATE:
+	if (!cur_disk.exists) {
+	  // this update would only have been sent by the rgw client
+	  // if the rgw_bucket_dir_entry existed, however between that
+	  // check and now the entry has diappeared, so we were likely
+	  // in the midst of a delete op, and we will not recreate the
+	  // entry
+	  CLS_LOG(10,
+		  "CEPH_RGW_UPDATE not applied because rgw_bucket_dir_entry"
+		  " no longer exists\n");
+	  break;
+	}
+
         CLS_LOG(10, "CEPH_RGW_UPDATE name=%s instance=%s total_entries: %" PRId64 " -> %" PRId64 "\n",
                 cur_change.key.name.c_str(), cur_change.key.instance.c_str(), stats.num_entries, stats.num_entries + 1);
         stats.num_entries++;
@@ -2286,9 +2305,8 @@ static int list_plain_entries(cls_method_context_t hctx, const string& name, con
   string filter = name;
   string start_key = marker;
 
-  string first_instance_idx;
-  encode_obj_versioned_data_key(string(), &first_instance_idx);
-  string end_key = first_instance_idx;
+  string end_key; // stop listing at bi_log_prefix
+  bi_log_prefix(end_key);
 
   int count = 0;
   map<string, bufferlist> keys;
@@ -2517,7 +2535,7 @@ static int rgw_bi_list_op(cls_method_context_t hctx, bufferlist *in, bufferlist 
 #define MAX_BI_LIST_ENTRIES 1000
   int32_t max = (op.max < MAX_BI_LIST_ENTRIES ? op.max : MAX_BI_LIST_ENTRIES) + 1; /* one extra entry for identifying truncation */
   string start_key = op.marker;
-  int ret = list_plain_entries(hctx, op.name, op.marker, max, &op_ret.entries) + 1; /* one extra entry for identifying truncation */
+  int ret = list_plain_entries(hctx, op.name, op.marker, max, &op_ret.entries);
   if (ret < 0) {
     CLS_LOG(0, "ERROR: %s(): list_plain_entries retured ret=%d", __func__, ret);
     return ret;
@@ -2536,7 +2554,7 @@ static int rgw_bi_list_op(cls_method_context_t hctx, bufferlist *in, bufferlist 
 
   ret = list_olh_entries(hctx, op.name, op.marker, max - count, &op_ret.entries);
   if (ret < 0) {
-    CLS_LOG(0, "ERROR: %s(): list_instance_entries retured ret=%d", __func__, ret);
+    CLS_LOG(0, "ERROR: %s(): list_olh_entries retured ret=%d", __func__, ret);
     return ret;
   }
 
@@ -3203,10 +3221,10 @@ static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, b
     *truncated = false;
 
   string start_key;
-  if (key_iter.empty()) {
+  if (marker.empty()) {
     prepend_index_prefix(marker, GC_OBJ_TIME_INDEX, &start_key);
   } else {
-    start_key = key_iter;
+    start_key = marker;
   }
 
   if (expired_only) {
@@ -3250,7 +3268,8 @@ static int gc_iterate_entries(cls_method_context_t hctx, const string& marker, b
       if (max_entries && (i >= max_entries)) {
         if (truncated)
           *truncated = true;
-        key_iter = key;
+        --iter;
+        key_iter = iter->first;
         return 0;
       }
 
@@ -3275,11 +3294,10 @@ static int gc_list_cb(cls_method_context_t hctx, const string& key, cls_rgw_gc_o
 
 static int gc_list_entries(cls_method_context_t hctx, const string& marker,
 			   uint32_t max, bool expired_only,
-                           list<cls_rgw_gc_obj_info>& entries, bool *truncated)
+                           list<cls_rgw_gc_obj_info>& entries, bool *truncated, string& next_marker)
 {
-  string key_iter;
   int ret = gc_iterate_entries(hctx, marker, expired_only,
-                              key_iter, max, truncated,
+                              next_marker, max, truncated,
                               gc_list_cb, &entries);
   return ret;
 }
@@ -3297,7 +3315,8 @@ static int rgw_cls_gc_list(cls_method_context_t hctx, bufferlist *in, bufferlist
   }
 
   cls_rgw_gc_list_ret op_ret;
-  int ret = gc_list_entries(hctx, op.marker, op.max, op.expired_only, op_ret.entries, &op_ret.truncated);
+  int ret = gc_list_entries(hctx, op.marker, op.max, op.expired_only, 
+   op_ret.entries, &op_ret.truncated, op_ret.next_marker);
   if (ret < 0)
     return ret;
 

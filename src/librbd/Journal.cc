@@ -797,6 +797,40 @@ int Journal<I>::promote(I *image_ctx) {
     return r;
   }
 
+  journaler.start_append(0, 0, 0);
+  BOOST_SCOPE_EXIT_ALL(&journaler) {
+    C_SaferCond stop_append_ctx;
+    journaler.stop_append(&stop_append_ctx);
+    stop_append_ctx.wait();
+  };
+
+  journal::EventEntry event_entry{journal::DemotePromoteEvent{}};
+  bufferlist event_entry_bl;
+  ::encode(event_entry, event_entry_bl);
+  Future future = journaler.append(new_tag.tid, event_entry_bl);
+
+  C_SaferCond flush_ctx;
+  future.flush(&flush_ctx);
+  r = flush_ctx.wait();
+  if (r < 0) {
+    lderr(cct) << __func__ << ": "
+               << "failed to append promotion journal event: " << cpp_strerror(r)
+               << dendl;
+    return r;
+  }
+
+  journaler.committed(future);
+
+  C_SaferCond flush_commit_ctx;
+  journaler.flush_commit_position(&flush_commit_ctx);
+  r = flush_commit_ctx.wait();
+  if (r < 0) {
+    lderr(cct) << __func__ << ": "
+               << "failed to flush promotion commit position: "
+               << cpp_strerror(r) << dendl;
+    return r;
+  }
+
   return 0;
 }
 
@@ -962,7 +996,7 @@ int Journal<I>::demote() {
       return r;
     }
 
-    journal::EventEntry event_entry{journal::DemoteEvent{}};
+    journal::EventEntry event_entry{journal::DemotePromoteEvent{}};
     bufferlist event_entry_bl;
     ::encode(event_entry, event_entry_bl);
 
@@ -1678,6 +1712,10 @@ void Journal<I>::handle_replay_complete(int r) {
         handle_flushing_replay();
       }
     });
+  ctx = new FunctionContext([this, ctx](int r) {
+      // ensure the commit position is flushed to disk
+      m_journaler->flush_commit_position(ctx);
+    });
   ctx = new FunctionContext([this, cct, cancel_ops, ctx](int r) {
       ldout(cct, 20) << this << " handle_replay_complete: "
                      << "shut down replay" << dendl;
@@ -1722,7 +1760,13 @@ void Journal<I>::handle_replay_process_safe(ReplayEntry replay_entry, int r) {
       m_lock.Unlock();
 
       // stop replay, shut down, and restart
-      Context *ctx = new FunctionContext([this, cct](int r) {
+      Context* ctx = create_context_callback<
+        Journal<I>, &Journal<I>::handle_flushing_restart>(this);
+      ctx = new FunctionContext([this, ctx](int r) {
+          // ensure the commit position is flushed to disk
+          m_journaler->flush_commit_position(ctx);
+        });
+      ctx = new FunctionContext([this, cct, ctx](int r) {
           ldout(cct, 20) << this << " handle_replay_process_safe: "
                          << "shut down replay" << dendl;
           {
@@ -1730,8 +1774,7 @@ void Journal<I>::handle_replay_process_safe(ReplayEntry replay_entry, int r) {
             assert(m_state == STATE_FLUSHING_RESTART);
           }
 
-          m_journal_replay->shut_down(true, create_context_callback<
-            Journal<I>, &Journal<I>::handle_flushing_restart>(this));
+          m_journal_replay->shut_down(true, ctx);
         });
       m_journaler->stop_replay(ctx);
       return;

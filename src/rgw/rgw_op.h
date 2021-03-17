@@ -34,6 +34,8 @@
 #include "rgw_acl.h"
 #include "rgw_cors.h"
 #include "rgw_quota.h"
+#include "cls/lock/cls_lock_client.h"
+#include "cls/rgw/cls_rgw_client.h"
 
 #include "include/assert.h"
 
@@ -59,6 +61,7 @@ protected:
   int do_aws4_auth_completion();
 
   virtual int init_quota();
+
 public:
 RGWOp() : s(nullptr), dialect_handler(nullptr), store(nullptr),
     cors_exist(false), op_ret(0) {}
@@ -426,6 +429,7 @@ public:
 
   virtual void send_response() = 0;
   virtual const string name() { return "get_bucket_location"; }
+  virtual RGWOpType get_type() { return RGW_OP_GET_BUCKET_LOCATION; }
   virtual uint32_t op_mask() { return RGW_OP_TYPE_READ; }
 };
 
@@ -669,8 +673,9 @@ protected:
   uint64_t olh_epoch;
   string version_id;
   bufferlist bl_aux;
+  string user_data;
 
-  ceph::real_time delete_at;
+  boost::optional<ceph::real_time> delete_at;
 
 public:
   RGWPutObj() : ofs(0),
@@ -735,7 +740,7 @@ protected:
   string content_type;
   RGWAccessControlPolicy policy;
   map<string, bufferlist> attrs;
-  ceph::real_time delete_at;
+  boost::optional<ceph::real_time> delete_at;
 
 public:
   RGWPostObj() : min_len(0), max_len(LLONG_MAX), len(0), ofs(0),
@@ -832,7 +837,7 @@ class RGWPutMetadataObject : public RGWOp {
 protected:
   RGWAccessControlPolicy policy;
   string placement_rule;
-  ceph::real_time delete_at;
+  boost::optional<ceph::real_time> delete_at;
   const char *dlo_manifest;
 
 public:
@@ -922,7 +927,7 @@ protected:
   string version_id;
   uint64_t olh_epoch;
 
-  ceph::real_time delete_at;
+  boost::optional<ceph::real_time> delete_at;
   bool copy_if_newer;
 
   int init_common();
@@ -1032,6 +1037,7 @@ public:
 class RGWPutCORS : public RGWOp {
 protected:
   bufferlist cors_bl;
+  bufferlist in_data;
 
 public:
   RGWPutCORS() {}
@@ -1147,6 +1153,27 @@ protected:
   char *data;
   int len;
 
+  struct MPSerializer {
+    librados::IoCtx ioctx;
+    rados::cls::lock::Lock lock;
+    librados::ObjectWriteOperation op;
+    std::string oid;
+    bool locked;
+
+    MPSerializer() : lock("RGWCompleteMultipart"), locked(false)
+      {}
+
+    int try_lock(const std::string& oid, utime_t dur);
+
+    int unlock() {
+      return lock.unlock(&ioctx, oid);
+    }
+
+    void clear_locked() {
+      locked = false;
+    }
+  } serializer;
+
 public:
   RGWCompleteMultipart() {
     data = NULL;
@@ -1159,6 +1186,7 @@ public:
   int verify_permission();
   void pre_exec();
   void execute();
+  void complete();
 
   virtual int get_params() = 0;
   virtual void send_response() = 0;
@@ -1552,15 +1580,15 @@ static inline void rgw_get_request_metadata(CephContext *cct,
   }
 } /* rgw_get_request_metadata */
 
-static inline void encode_delete_at_attr(ceph::real_time delete_at,
+static inline void encode_delete_at_attr(boost::optional<ceph::real_time> delete_at,
 					map<string, bufferlist>& attrs)
 {
-  if (real_clock::is_zero(delete_at)) {
+  if (delete_at == boost::none) {
     return;
-  }
+  } 
 
   bufferlist delatbl;
-  ::encode(delete_at, delatbl);
+  ::encode(*delete_at, delatbl);
   attrs[RGW_ATTR_DELETE_AT] = delatbl;
 } /* encode_delete_at_attr */
 

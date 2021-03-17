@@ -247,7 +247,6 @@ Client::Client(Messenger *m, MonClient *mc)
     getgroups_cb(NULL),
     umask_cb(NULL),
     can_invalidate_dentries(false),
-    require_remount(false),
     async_ino_invalidator(m->cct),
     async_dentry_invalidator(m->cct),
     interrupt_finisher(m->cct),
@@ -2704,11 +2703,19 @@ void Client::kick_requests(MetaSession *session)
   for (map<ceph_tid_t, MetaRequest*>::iterator p = mds_requests.begin();
        p != mds_requests.end();
        ++p) {
-    if (p->second->got_unsafe)
+    MetaRequest *req = p->second;
+    if (req->got_unsafe)
       continue;
-    if (p->second->retry_attempt > 0)
+    if (req->aborted()) {
+      if (req->caller_cond) {
+	req->kick = true;
+	req->caller_cond->Signal();
+      }
+      continue;
+    }
+    if (req->retry_attempt > 0)
       continue; // new requests only
-    if (p->second->mds == session->mds_num) {
+    if (req->mds == session->mds_num) {
       send_request(p->second, session);
     }
   }
@@ -2728,6 +2735,8 @@ void Client::resend_unsafe_requests(MetaSession *session)
        ++p) {
     MetaRequest *req = p->second;
     if (req->got_unsafe)
+      continue;
+    if (req->aborted())
       continue;
     if (req->retry_attempt == 0)
       continue; // old requests only
@@ -3271,6 +3280,19 @@ void Client::send_cap(Inode *in, MetaSession *session, Cap *cap,
   session->con->send_message(m);
 }
 
+static bool is_max_size_approaching(Inode *in)
+{
+  /* mds will adjust max size according to the reported size */
+  if (in->flushing_caps & CEPH_CAP_FILE_WR)
+    return false;
+  if (in->size >= in->max_size)
+    return true;
+  /* half of previous max_size increment has been used */
+  if (in->max_size > in->reported_size &&
+      (in->size << 1) >= in->max_size + in->reported_size)
+    return true;
+  return false;
+}
 
 void Client::check_caps(Inode *in, bool is_delayed)
 {
@@ -3312,8 +3334,10 @@ void Client::check_caps(Inode *in, bool is_delayed)
     return;   // guard if at end of func
 
   if ((revoking & (CEPH_CAP_FILE_CACHE | CEPH_CAP_FILE_LAZYIO)) &&
-      (used & CEPH_CAP_FILE_CACHE) && !(used & CEPH_CAP_FILE_BUFFER))
-    _release(in);
+      (used & CEPH_CAP_FILE_CACHE) && !(used & CEPH_CAP_FILE_BUFFER)) {
+    if (_release(in))
+      used &= ~CEPH_CAP_FILE_CACHE;
+  }
 
   if (!in->cap_snaps.empty())
     flush_snaps(in);
@@ -3352,11 +3376,10 @@ void Client::check_caps(Inode *in, bool is_delayed)
 
     /* approaching file_max? */
     if ((cap->issued & CEPH_CAP_FILE_WR) &&
-	(in->size << 1) >= in->max_size &&
-	(in->reported_size << 1) < in->max_size &&
-	cap == in->auth_cap) {
+	cap == in->auth_cap &&
+	is_max_size_approaching(in)) {
       ldout(cct, 10) << "size " << in->size << " approaching max_size " << in->max_size
-	       << ", reported " << in->reported_size << dendl;
+		     << ", reported " << in->reported_size << dendl;
       goto ack;
     }
 
@@ -3642,8 +3665,11 @@ void Client::_invalidate_inode_cache(Inode *in)
   ldout(cct, 10) << "_invalidate_inode_cache " << *in << dendl;
 
   // invalidate our userspace inode cache
-  if (cct->_conf->client_oc)
+  if (cct->_conf->client_oc) {
     objectcacher->release_set(&in->oset);
+    if (!objectcacher->set_is_empty(&in->oset))
+      lderr(cct) << "failed to invalidate cache for " << *in << dendl;
+  }
 
   _schedule_invalidate_callback(in, 0, 0);
 }
@@ -3917,6 +3943,32 @@ void Client::remove_session_caps(MetaSession *s)
   sync_cond.Signal();
 }
 
+int Client::_do_remount(void)
+{
+  errno = 0;
+  int r = remount_cb(callback_handle);
+  if (r != 0) {
+    int e = errno;
+    client_t whoami = get_nodeid();
+    if (r == -1) {
+      lderr(cct) <<
+          "failed to remount (to trim kernel dentries): "
+          "errno = " << e << " (" << strerror(e) << ")" << dendl;
+    } else {
+      lderr(cct) <<
+          "failed to remount (to trim kernel dentries): "
+          "return code = " << r << dendl;
+    }
+    bool should_abort = cct->_conf->client_die_on_failed_remount ||
+        cct->_conf->client_die_on_failed_dentry_invalidate;
+    if (should_abort && !unmounting) {
+      lderr(cct) << "failed to remount for kernel dentry trimming; quitting!" << dendl;
+      ceph_abort();
+    }
+  }
+  return r;
+}
+
 class C_Client_Remount : public Context  {
 private:
   Client *client;
@@ -3924,15 +3976,7 @@ public:
   explicit C_Client_Remount(Client *c) : client(c) {}
   void finish(int r) {
     assert (r == 0);
-    r = client->remount_cb(client->callback_handle);
-    if (r != 0) {
-      client_t whoami = client->get_nodeid();
-      lderr(client->cct) << "tried to remount (to trim kernel dentries) and got error "
-			 << r << dendl;
-      if (client->require_remount && !client->unmounting) {
-	assert(0 == "failed to remount for kernel dentry trimming");
-      }
-    }
+    client->_do_remount();
   }
 };
 
@@ -3940,12 +3984,14 @@ void Client::_invalidate_kernel_dcache()
 {
   if (unmounting)
     return;
-  if (can_invalidate_dentries && dentry_invalidate_cb && root->dir) {
-    for (ceph::unordered_map<string, Dentry*>::iterator p = root->dir->dentries.begin();
-	 p != root->dir->dentries.end();
-	 ++p) {
-      if (p->second->inode)
-	_schedule_invalidate_dentry_callback(p->second, false);
+  if (can_invalidate_dentries) {
+    if (dentry_invalidate_cb && root->dir) {
+      for (ceph::unordered_map<string, Dentry*>::iterator p = root->dir->dentries.begin();
+         p != root->dir->dentries.end();
+         ++p) {
+       if (p->second->inode)
+        _schedule_invalidate_dentry_callback(p->second, false);
+      }
     }
   } else if (remount_cb) {
     // Hacky:
@@ -6280,8 +6326,13 @@ int Client::mkdirs(const char *relpath, mode_t mode)
     }
     //make new dir
     r = _mkdir(cur.get(), path[i].c_str(), mode, uid, gid, &next);
+
     //check proper creation/existence
-    if (r < 0) return r;
+    if(-EEXIST == r && i < path.depth() - 1) {
+      r = _lookup(cur.get(), path[i].c_str(), CEPH_CAP_AUTH_SHARED, &next, uid, gid);
+    }
+    if (r < 0)
+      return r;
     //move to new dir and continue
     cur.swap(next);
     ldout(cct, 20) << "mkdirs: successfully created directory "
@@ -7556,11 +7607,11 @@ int Client::getdir(const char *relpath, list<string>& contents)
 int Client::open(const char *relpath, int flags, mode_t mode, int stripe_unit,
     int stripe_count, int object_size, const char *data_pool)
 {
-  ldout(cct, 3) << "open enter(" << relpath << ", " << flags << "," << mode << ") = " << dendl;
+  ldout(cct, 3) << "open enter(" << relpath << ", " << ceph_flags_sys2wire(flags) << "," << mode << ") = " << dendl;
   Mutex::Locker lock(client_lock);
   tout(cct) << "open" << std::endl;
   tout(cct) << relpath << std::endl;
-  tout(cct) << flags << std::endl;
+  tout(cct) << ceph_flags_sys2wire(flags) << std::endl;
 
   uid_t uid = get_uid();
   gid_t gid = get_gid();
@@ -7632,7 +7683,7 @@ int Client::open(const char *relpath, int flags, mode_t mode, int stripe_unit,
   
  out:
   tout(cct) << r << std::endl;
-  ldout(cct, 3) << "open exit(" << path << ", " << flags << ") = " << r << dendl;
+  ldout(cct, 3) << "open exit(" << path << ", " << ceph_flags_sys2wire(flags) << ") = " << r << dendl;
   return r;
 }
 
@@ -7833,7 +7884,8 @@ void Client::_put_fh(Fh *f)
 
 int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp, int uid, int gid)
 {
-  int cmode = ceph_flags_to_mode(flags);
+  // use normalized flags to generate cmode
+  int cmode = ceph_flags_to_mode(ceph_flags_sys2wire(flags));
   if (cmode < 0)
     return -EINVAL;
   int want = ceph_caps_for_mode(cmode);
@@ -7854,8 +7906,8 @@ int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp, int uid, int gid)
     MetaRequest *req = new MetaRequest(CEPH_MDS_OP_OPEN);
     filepath path;
     in->make_nosnap_relative_path(path);
-    req->set_filepath(path); 
-    req->head.args.open.flags = flags & ~O_CREAT;
+    req->set_filepath(path);
+    req->head.args.open.flags = ceph_flags_sys2wire(flags & ~O_CREAT);
     req->head.args.open.mode = mode;
     req->head.args.open.pool = -1;
     if (cct->_conf->client_debug_getattr_caps)
@@ -8633,10 +8685,8 @@ success:
 
     if (is_quota_bytes_approaching(in)) {
       check_caps(in, true);
-    } else {
-      if ((in->size << 1) >= in->max_size &&
-          (in->reported_size << 1) < in->max_size)
-        check_caps(in, false);
+    } else if (is_max_size_approaching(in)) {
+      check_caps(in, false);
     }
 
     ldout(cct, 7) << "wrote to " << totalwritten+offset << ", extending file size" << dendl;
@@ -8949,8 +8999,9 @@ int Client::statfs(const char *path, struct statvfs *stbuf)
     // as the filesystem statistics.
     const fsblkcnt_t total = quota_root->quota.max_bytes >> CEPH_BLOCK_SHIFT;
     const fsblkcnt_t used = quota_root->rstat.rbytes >> CEPH_BLOCK_SHIFT;
-    const fsblkcnt_t free = total - used;
-
+    // It is possible for a quota to be exceeded: arithmetic here must
+    // handle case where used > total.
+    const fsblkcnt_t free = total > used ? total - used : 0;
 
     stbuf->f_blocks = total;
     stbuf->f_bfree = free;
@@ -9015,11 +9066,13 @@ int Client::_do_filelock(Inode *in, Fh *fh, int lock_type, int op, int sleep,
   if (sleep && switch_interrupt_cb) {
     // enable interrupt
     switch_interrupt_cb(callback_handle, req->get());
-
     ret = make_request(req, -1, -1, NULL, NULL, -1, &bl);
-
     // disable interrupt
     switch_interrupt_cb(callback_handle, NULL);
+    if (ret == 0 && req->aborted()) {
+      // effect of this lock request has been revoked by the 'lock intr' request
+      ret = req->get_abort_code();
+    }
     put_request(req);
   } else {
     ret = make_request(req, -1, -1, NULL, NULL, -1, &bl);
@@ -9078,6 +9131,12 @@ int Client::_do_filelock(Inode *in, Fh *fh, int lock_type, int op, int sleep,
 
 int Client::_interrupt_filelock(MetaRequest *req)
 {
+  // Set abort code, but do not kick. The abort code prevents the request
+  // from being re-sent.
+  req->abort(-EINTR);
+  if (req->mds < 0)
+    return 0; // haven't sent the request
+
   Inode *in = req->inode();
 
   int lock_type;
@@ -9305,21 +9364,19 @@ int Client::test_dentry_handling(bool can_invalidate)
   if (can_invalidate_dentries) {
     assert(dentry_invalidate_cb);
     ldout(cct, 1) << "using dentry_invalidate_cb" << dendl;
+    r = 0;
   } else if (remount_cb) {
     ldout(cct, 1) << "using remount_cb" << dendl;
-    int s = remount_cb(callback_handle);
-    if (s) {
-      lderr(cct) << "Failed to invoke remount, needed to ensure kernel dcache consistency"
-		 << dendl;
+    r = _do_remount();
+  }
+  if (r) {
+    bool should_abort = cct->_conf->client_die_on_failed_dentry_invalidate;
+    if (should_abort) {
+      lderr(cct) << "no method to invalidate kernel dentry cache; quitting!" << dendl;
+      ceph_abort();
+    } else {
+      lderr(cct) << "no method to invalidate kernel dentry cache; expect issues!" << dendl;
     }
-    if (cct->_conf->client_die_on_failed_remount) {
-      require_remount = true;
-      r = s;
-    }
-  } else {
-    lderr(cct) << "no method to invalidate kernel dentry cache; expect issues!" << dendl;
-    if (cct->_conf->client_die_on_failed_remount)
-      assert(0);
   }
   return r;
 }
@@ -10590,7 +10647,8 @@ int Client::_create(Inode *dir, const char *name, int flags, mode_t mode,
     return -EDQUOT;
   }
 
-  int cmode = ceph_flags_to_mode(flags);
+  // use normalized flags to generate cmode
+  int cmode = ceph_flags_to_mode(ceph_flags_sys2wire(flags));
   if (cmode < 0)
     return -EINVAL;
 
@@ -10611,7 +10669,7 @@ int Client::_create(Inode *dir, const char *name, int flags, mode_t mode,
   path.push_dentry(name);
   req->set_filepath(path);
   req->set_inode(dir);
-  req->head.args.open.flags = flags | O_CREAT;
+  req->head.args.open.flags = ceph_flags_sys2wire(flags | O_CREAT);
 
   req->head.args.open.stripe_unit = stripe_unit;
   req->head.args.open.stripe_count = stripe_count;
@@ -10903,8 +10961,9 @@ int Client::_rmdir(Inode *dir, const char *name, int uid, int gid)
   if (dir->snapid != CEPH_NOSNAP && dir->snapid != CEPH_SNAPDIR) {
     return -EROFS;
   }
-
-  MetaRequest *req = new MetaRequest(dir->snapid == CEPH_SNAPDIR ? CEPH_MDS_OP_RMSNAP:CEPH_MDS_OP_RMDIR);
+  
+  int op = dir->snapid == CEPH_SNAPDIR ? CEPH_MDS_OP_RMSNAP : CEPH_MDS_OP_RMDIR;
+  MetaRequest *req = new MetaRequest(op);
   filepath path;
   dir->make_nosnap_relative_path(path);
   path.push_dentry(name);
@@ -10920,15 +10979,20 @@ int Client::_rmdir(Inode *dir, const char *name, int uid, int gid)
   int res = get_or_create(dir, name, &de);
   if (res < 0)
     goto fail;
+  if (op == CEPH_MDS_OP_RMDIR) 
+    req->set_dentry(de);
+  else
+    de->get();
+
   res = _lookup(dir, name, 0, &in, uid, gid);
   if (res < 0)
     goto fail;
-  if (req->get_op() == CEPH_MDS_OP_RMDIR) {
+  if (op == CEPH_MDS_OP_RMDIR) {
     req->set_inode(dir);
-    req->set_dentry(de);
     req->set_other_inode(in.get());
   } else {
     unlink(de, true, true);
+    de->put();
     req->set_other_inode(in.get());
   }
 
@@ -11226,7 +11290,8 @@ int Client::ll_get_stripe_osd(Inode *in, uint64_t blockno,
 			      file_layout_t* layout)
 {
   Mutex::Locker lock(client_lock);
-  inodeno_t ino = ll_get_inodeno(in);
+
+  inodeno_t ino = in->ino;
   uint32_t object_size = layout->object_size;
   uint32_t su = layout->stripe_unit;
   uint32_t stripe_count = layout->stripe_count;
@@ -11315,10 +11380,10 @@ int Client::ll_open(Inode *in, int flags, Fh **fhp, int uid, int gid)
 
   vinodeno_t vino = _get_vino(in);
 
-  ldout(cct, 3) << "ll_open " << vino << " " << flags << dendl;
+  ldout(cct, 3) << "ll_open " << vino << " " << ceph_flags_sys2wire(flags) << dendl;
   tout(cct) << "ll_open" << std::endl;
   tout(cct) << vino.ino.val << std::endl;
-  tout(cct) << flags << std::endl;
+  tout(cct) << ceph_flags_sys2wire(flags) << std::endl;
 
   int r;
   if (uid < 0) {
@@ -11339,8 +11404,8 @@ int Client::ll_open(Inode *in, int flags, Fh **fhp, int uid, int gid)
     ll_unclosed_fh_set.insert(fhptr);
   }
   tout(cct) << (unsigned long)fhptr << std::endl;
-  ldout(cct, 3) << "ll_open " << vino << " " << flags << " = " << r << " (" <<
-    fhptr << ")" << dendl;
+  ldout(cct, 3) << "ll_open " << vino << " " << ceph_flags_sys2wire(flags) <<
+      " = " << r << " (" << fhptr << ")" << dendl;
   return r;
 }
 
@@ -11353,12 +11418,12 @@ int Client::ll_create(Inode *parent, const char *name, mode_t mode,
   vinodeno_t vparent = _get_vino(parent);
 
   ldout(cct, 3) << "ll_create " << vparent << " " << name << " 0" << oct <<
-    mode << dec << " " << flags << ", uid " << uid << ", gid " << gid << dendl;
+    mode << dec << " " << ceph_flags_sys2wire(flags)<< ", uid " << uid << ", gid " << gid << dendl;
   tout(cct) << "ll_create" << std::endl;
   tout(cct) << vparent.ino.val << std::endl;
   tout(cct) << name << std::endl;
   tout(cct) << mode << std::endl;
-  tout(cct) << flags << std::endl;
+  tout(cct) << ceph_flags_sys2wire(flags) << std::endl;
 
   bool created = false;
   InodeRef in;
@@ -11415,7 +11480,7 @@ out:
   tout(cct) << (unsigned long)fhptr << std::endl;
   tout(cct) << attr->st_ino << std::endl;
   ldout(cct, 3) << "ll_create " << parent << " " << name << " 0" << oct <<
-    mode << dec << " " << flags << " = " << r << " (" << fhptr << " " <<
+    mode << dec << " " << ceph_flags_sys2wire(flags) << " = " << r << " (" << fhptr << " " <<
     hex << attr->st_ino << dec << ")" << dendl;
 
   // passing an Inode in outp requires an additional ref
@@ -11734,10 +11799,8 @@ int Client::_fallocate(Fh *fh, int mode, int64_t offset, int64_t length)
 
       if (is_quota_bytes_approaching(in)) {
         check_caps(in, true);
-      } else {
-        if ((in->size << 1) >= in->max_size &&
-            (in->reported_size << 1) < in->max_size)
-          check_caps(in, false);
+      } else if (is_max_size_approaching(in)) {
+        check_caps(in, false);
       }
     }
   }
@@ -12184,6 +12247,12 @@ Inode *Client::get_quota_root(Inode *in)
 
     if (cur == root_ancestor)
       break;
+
+    // deleted inode
+    if (cur->nlink == 0) {
+      cur = root_ancestor;
+      break;
+    }
 
     MetaRequest *req = new MetaRequest(CEPH_MDS_OP_LOOKUPNAME);
     filepath path(cur->ino);

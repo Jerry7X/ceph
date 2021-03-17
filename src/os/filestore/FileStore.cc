@@ -706,9 +706,19 @@ int FileStore::statfs(struct statfs *buf)
     assert(r != -ENOENT);
     return r;
   }
+  // Adjust for writes pending in the journal
+  if (journal) {
+    fsblkcnt_t estimate = DIV_ROUND_UP(journal->get_journal_size_estimate(), buf->f_bsize);
+    if (buf->f_bavail > estimate) {
+      buf->f_bavail -= estimate;
+      buf->f_bfree -= estimate;
+    } else {
+      buf->f_bavail = 0;
+      buf->f_bfree = 0;
+    }
+  }
   return 0;
 }
-
 
 void FileStore::new_journal()
 {
@@ -2895,7 +2905,7 @@ void FileStore::_do_transaction(
 	} else if (r == -ENOSPC) {
 	  // For now, if we hit _any_ ENOSPC, crash, before we do any damage
 	  // by partially applying transactions.
-	  msg = "ENOSPC handling not implemented";
+	  msg = "ENOSPC from disk filesystem, misconfigured cluster";
 	} else if (r == -ENOTEMPTY) {
 	  msg = "ENOTEMPTY suggests garbage data in osd data dir";
 	} else if (r == -EPERM) {
@@ -3102,16 +3112,13 @@ more:
     i++;
     last = extent++;
   }
-  const bool is_last = last->fe_flags & FIEMAP_EXTENT_LAST;
+  uint64_t xoffset = last->fe_logical + last->fe_length - offset;
+  offset = last->fe_logical + last->fe_length;
+  len -= xoffset;
+  const bool is_last = (last->fe_flags & FIEMAP_EXTENT_LAST) || (len == 0);
+  free(fiemap);
   if (!is_last) {
-    uint64_t xoffset = last->fe_logical + last->fe_length - offset;
-    offset = last->fe_logical + last->fe_length;
-    len -= xoffset;
-    free(fiemap); /* fix clang warn: use-after-free */
     goto more;
-  }
-  else {
-    free(fiemap);
   }
 
   return r;
@@ -4110,6 +4117,7 @@ void FileStore::inject_mdata_error(const ghobject_t &oid) {
   dout(10) << __func__ << ": init error on " << oid << dendl;
   mdata_error_set.insert(oid);
 }
+
 void FileStore::debug_obj_on_delete(const ghobject_t &oid) {
   Mutex::Locker l(read_error_lock);
   dout(10) << __func__ << ": clear error on " << oid << dendl;

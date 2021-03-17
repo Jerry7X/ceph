@@ -1167,6 +1167,10 @@ namespace librbd {
   {
     ImageCtx *ictx = (ImageCtx *)ctx;
     tracepoint(librbd, discard_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, ofs, len);
+    if (len > std::numeric_limits<int32_t>::max()) {
+        tracepoint(librbd, discard_exit, -EINVAL);
+        return -EINVAL;
+    }
     int r = ictx->aio_work_queue->discard(ofs, len);
     tracepoint(librbd, discard_exit, r);
     return r;
@@ -1328,7 +1332,7 @@ namespace librbd {
 
   int Image::mirror_image_enable() {
     ImageCtx *ictx = (ImageCtx *)ctx;
-    return librbd::mirror_image_enable(ictx);
+    return librbd::mirror_image_enable(ictx, false);
   }
 
   int Image::mirror_image_disable(bool force) {
@@ -2675,6 +2679,10 @@ extern "C" int rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len)
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
   tracepoint(librbd, discard_enter, ictx, ictx->name.c_str(), ictx->snap_name.c_str(), ictx->read_only, ofs, len);
   int r = ictx->aio_work_queue->discard(ofs, len);
+  if (len > std::numeric_limits<int>::max()) {
+    tracepoint(librbd, discard_exit, -EINVAL);
+    return -EINVAL;
+  }
   tracepoint(librbd, discard_exit, r);
   return r;
 }
@@ -2873,7 +2881,7 @@ extern "C" int rbd_metadata_list(rbd_image_t image, const char *start, uint64_t 
 extern "C" int rbd_mirror_image_enable(rbd_image_t image)
 {
   librbd::ImageCtx *ictx = (librbd::ImageCtx *)image;
-  return librbd::mirror_image_enable(ictx);
+  return librbd::mirror_image_enable(ictx, false);
 }
 
 extern "C" int rbd_mirror_image_disable(rbd_image_t image, bool force)
